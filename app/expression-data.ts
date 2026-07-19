@@ -74,6 +74,12 @@ export type Expression = {
   conditions: Condition[];
 };
 
+export type SavedExpression = Expression & {
+  status: "Draft" | "Published";
+  updatedAt: string;
+  usedIn: number;
+};
+
 export type FunctionDefinition = {
   key: FunctionKey;
   label: string;
@@ -200,6 +206,69 @@ export const initialExpression: Expression = {
     { id: "condition-2", field: "invoice.status", operator: "equals", value: "Open" },
   ],
 };
+
+export const seedExpressions: SavedExpression[] = [
+  {
+    ...initialExpression,
+    status: "Published",
+    updatedAt: "Today, 9:42 AM",
+    usedIn: 3,
+  },
+  {
+    id: "expr-oldest-invoice-age",
+    name: "Oldest invoice age",
+    description: "Days since the oldest open invoice became due.",
+    level: "customer",
+    resultType: "number",
+    functionKey: "DAYS",
+    sourceField: "invoice.dueDate",
+    conditions: [{ id: "condition-age", field: "invoice.status", operator: "equals", value: "Open" }],
+    status: "Published",
+    updatedAt: "Jul 18, 4:15 PM",
+    usedIn: 2,
+  },
+  {
+    id: "expr-collection-priority",
+    name: "Collection priority",
+    description: "Classifies customers using their open exposure.",
+    level: "customer",
+    resultType: "text",
+    functionKey: "IF",
+    sourceField: "invoice.openAmount",
+    conditions: [{ id: "condition-priority", field: "invoice.status", operator: "equals", value: "Open" }],
+    status: "Draft",
+    updatedAt: "Jul 17, 11:08 AM",
+    usedIn: 0,
+  },
+  {
+    id: "expr-credit-utilization",
+    name: "Credit utilization",
+    description: "Open amount as a percentage of customer credit limit.",
+    level: "customer",
+    resultType: "number",
+    functionKey: "PERCENT",
+    sourceField: "invoice.openAmount",
+    conditions: [{ id: "condition-percent", field: "invoice.status", operator: "equals", value: "Open" }],
+    status: "Published",
+    updatedAt: "Jul 15, 2:31 PM",
+    usedIn: 4,
+  },
+];
+
+export function sourceFieldsForFunction(functionKey: FunctionKey) {
+  if (functionKey === "COUNTIFS") return [];
+  if (["DAYS", "EOMONTH"].includes(functionKey)) return fieldCatalog.filter((field) => field.kind === "date");
+  if (["CONCAT", "UPPER", "LOWER", "TRIM", "COALESCE"].includes(functionKey)) return fieldCatalog.filter((field) => field.kind === "text");
+  return fieldCatalog.filter((field) => field.kind === "amount" || field.kind === "number");
+}
+
+export function inferResultType(expression: Expression): ResultType {
+  if (["IF", "CONCAT", "UPPER", "LOWER", "TRIM", "COALESCE"].includes(expression.functionKey)) return "text";
+  if (expression.functionKey === "EOMONTH") return "date";
+  if (["COUNTIFS", "DAYS", "PERCENT"].includes(expression.functionKey)) return "number";
+  const sourceKind = fieldCatalog.find((field) => field.key === expression.sourceField)?.kind;
+  return sourceKind === "amount" ? "amount" : sourceKind === "date" ? "date" : sourceKind === "text" ? "text" : "number";
+}
 
 export const money = new Intl.NumberFormat("en-US", {
   style: "currency",

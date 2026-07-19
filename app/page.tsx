@@ -24,6 +24,7 @@ import {
   LayoutGrid,
   ListFilter,
   LoaderCircle,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -46,23 +47,26 @@ import {
   type Invoice,
   type Level,
   type Operator,
-  type ResultType,
+  type SavedExpression,
   evaluateExpression,
   fieldCatalog,
   formatResult,
   functionCatalog,
   getFieldValue,
+  inferResultType,
   initialExpression,
   money,
   referenceHeaders,
   seedCustomers,
+  seedExpressions,
   seedInvoices,
+  sourceFieldsForFunction,
   sqlParameters,
   toExcelFormula,
   toSql,
 } from "./expression-data";
 
-type View = "builder" | "simulation" | "customers" | "invoices";
+type View = "expressions" | "builder" | "simulation" | "customers" | "invoices";
 type WorkspaceTab = {
   id: string;
   label: string;
@@ -94,30 +98,24 @@ const operatorLabels: Record<Operator, string> = {
 };
 
 const viewLabels: Record<View, string> = {
-  builder: "Expression Studio",
+  expressions: "Expression Studio",
+  builder: "Calculated field",
   simulation: "Simulation Lab",
   customers: "Customers",
   invoices: "Invoices",
 };
 
 const viewIcons: Record<View, ReactNode> = {
+  expressions: <FunctionSquare size={18} />,
   builder: <FunctionSquare size={18} />,
   simulation: <FlaskConical size={18} />,
   customers: <Users size={18} />,
   invoices: <FileSpreadsheet size={18} />,
 };
 
-const numericSourceFields = fieldCatalog.filter(
-  (field) => field.kind === "amount" || field.kind === "number",
-);
 const conditionFields = fieldCatalog.filter((field) => field.entity === "Invoice" || field.key.startsWith("customer."));
 
-function resultTypeForFunction(functionKey: FunctionKey): ResultType {
-  if (["IF", "CONCAT", "UPPER", "LOWER", "TRIM", "COALESCE"].includes(functionKey)) return "text";
-  if (functionKey === "EOMONTH") return "date";
-  if (["COUNTIFS", "DAYS", "PERCENT"].includes(functionKey)) return "number";
-  return "amount";
-}
+const resultTypeLabels = { amount: "Amount", number: "Number", text: "Text", date: "Date" } as const;
 
 function parseCsvLine(line: string) {
   const values: string[] = [];
@@ -493,6 +491,86 @@ function UploadModal({
   );
 }
 
+function CalculatedFieldsLibrary({
+  fields,
+  onNew,
+  onEdit,
+  onRun,
+  onShowGuide,
+}: {
+  fields: SavedExpression[];
+  onNew: () => void;
+  onEdit: (expression: SavedExpression) => void;
+  onRun: (expression: SavedExpression) => void;
+  onShowGuide: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<"All" | SavedExpression["status"]>("All");
+  const visibleFields = fields.filter((field) => {
+    const matchesQuery = `${field.name} ${field.description} ${field.functionKey}`.toLowerCase().includes(query.toLowerCase());
+    return matchesQuery && (status === "All" || field.status === status);
+  });
+  const published = fields.filter((field) => field.status === "Published").length;
+  const customerLevel = fields.filter((field) => field.level === "customer").length;
+
+  return (
+    <section className="fields-library page-enter">
+      <header className="page-title-row">
+        <div>
+          <div className="title-kicker"><FunctionSquare size={14} /> Administration · Calculated fields</div>
+          <h1>Calculated fields</h1>
+          <p>Create, test, publish, and maintain reusable customer and invoice values.</p>
+        </div>
+        <div className="page-actions">
+          <button className="text-button" onClick={onShowGuide}><CircleHelp size={17} /> How to</button>
+          <button className="primary-button" onClick={onNew}><Plus size={16} /> New calculated field</button>
+        </div>
+      </header>
+
+      <div className="field-summary-strip" aria-label="Calculated field summary">
+        <div><span>Total fields</span><strong>{fields.length}</strong><small>Across customer and invoice levels</small></div>
+        <div><span>Published</span><strong>{published}</strong><small>Available for product views</small></div>
+        <div><span>Drafts</span><strong>{fields.length - published}</strong><small>Still being configured</small></div>
+        <div><span>Customer level</span><strong>{customerLevel}</strong><small>{fields.length - customerLevel} invoice-level fields</small></div>
+      </div>
+
+      <section className="field-library-surface">
+        <div className="field-library-toolbar">
+          <div><span className="eyebrow">Expression Studio</span><h2>Your calculated fields</h2></div>
+          <div className="field-library-filters">
+            <label className="search-field"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search fields or functions" /></label>
+            <label className="status-filter"><ListFilter size={15} /><select aria-label="Filter by status" value={status} onChange={(event) => setStatus(event.target.value as "All" | SavedExpression["status"])}><option>All</option><option>Published</option><option>Draft</option></select></label>
+          </div>
+        </div>
+        <div className="field-table" role="table" aria-label="Saved calculated fields">
+          <div className="field-table-header" role="row"><span>Field</span><span>Level</span><span>Output</span><span>Function</span><span>Status</span><span>Last updated</span><span>Actions</span></div>
+          {visibleFields.map((field) => {
+            const resultType = inferResultType(field);
+            return (
+              <div className="field-table-row" role="row" key={field.id}>
+                <button className="field-identity" onClick={() => onEdit(field)}>
+                  <span className="field-fx">fx</span>
+                  <span><strong>{field.name}</strong><small>{field.description}</small></span>
+                </button>
+                <span className="field-level">{field.level === "customer" ? "Customer" : "Invoice"}</span>
+                <span className={`output-pill output-${resultType}`}>{resultTypeLabels[resultType]}</span>
+                <span className="function-code">{field.functionKey}</span>
+                <StatusPill value={field.status} />
+                <span className="field-updated"><strong>{field.updatedAt}</strong><small>{field.usedIn ? `Used in ${field.usedIn} view${field.usedIn === 1 ? "" : "s"}` : "Not used yet"}</small></span>
+                <span className="field-row-actions">
+                  <IconButton label={`Edit ${field.name}`} onClick={() => onEdit(field)}><Pencil size={15} /></IconButton>
+                  <button className="run-field-button" onClick={() => onRun(field)}><FlaskConical size={15} /> Run</button>
+                </span>
+              </div>
+            );
+          })}
+          {!visibleFields.length && <div className="field-library-empty"><Search size={22} /><strong>No calculated fields found</strong><span>Try another search or create a new field.</span></div>}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function ExpressionBuilder({
   expression,
   setExpression,
@@ -501,6 +579,9 @@ function ExpressionBuilder({
   onShowGuide,
   onShowFunctions,
   onOpenSimulation,
+  onBackToLibrary,
+  onSaveDraft,
+  onPublish,
   onToast,
 }: {
   expression: Expression;
@@ -510,6 +591,9 @@ function ExpressionBuilder({
   onShowGuide: () => void;
   onShowFunctions: () => void;
   onOpenSimulation: () => void;
+  onBackToLibrary: () => void;
+  onSaveDraft: () => void;
+  onPublish: () => void;
   onToast: (message: string) => void;
 }) {
   const [mode, setMode] = useState<FormulaMode>("visual");
@@ -526,6 +610,27 @@ function ExpressionBuilder({
     result: evaluateExpression(expression, customer, invoices),
   }));
   const selectedFunction = functionCatalog.find((item) => item.key === expression.functionKey)!;
+  const availableSourceFields = sourceFieldsForFunction(expression.functionKey);
+  const resultType = inferResultType(expression);
+  const sourceField = fieldCatalog.find((field) => field.key === expression.sourceField);
+  const calculationPhrases: Record<FunctionKey, string> = {
+    SUMIFS: "sum the values in",
+    COUNTIFS: "count matching records",
+    AVERAGEIFS: "average the values in",
+    MIN: "find the minimum in",
+    MAX: "find the maximum in",
+    IF: "classify using",
+    ROUND: "round",
+    ABS: "find the absolute value of",
+    DAYS: "calculate days from",
+    EOMONTH: "find the month end for",
+    CONCAT: "join text from",
+    UPPER: "convert to uppercase",
+    LOWER: "convert to lowercase",
+    TRIM: "trim spaces from",
+    COALESCE: "use the first available value from",
+    PERCENT: "calculate the percentage from",
+  };
 
   function updateCondition(id: string, patch: Partial<Condition>) {
     setExpression((current) => ({ ...current, conditions: current.conditions.map((condition) => condition.id === id ? { ...condition, ...patch } : condition) }));
@@ -533,10 +638,10 @@ function ExpressionBuilder({
 
   function applyRecipe(recipe: "sum" | "age" | "priority" | "percent") {
     const patches: Record<typeof recipe, Partial<Expression>> = {
-      sum: { name: "Selected document type open amount", functionKey: "SUMIFS", resultType: "amount", sourceField: "invoice.openAmount", conditions: initialExpression.conditions },
-      age: { name: "Oldest invoice age", functionKey: "DAYS", resultType: "number", sourceField: "invoice.dueDate", conditions: [{ id: "condition-age", field: "invoice.status", operator: "equals", value: "Open" }] },
-      priority: { name: "Collection priority", functionKey: "IF", resultType: "text", sourceField: "invoice.openAmount", conditions: [{ id: "condition-priority", field: "invoice.status", operator: "equals", value: "Open" }] },
-      percent: { name: "Credit utilization", functionKey: "PERCENT", resultType: "number", sourceField: "invoice.openAmount", conditions: [{ id: "condition-percent", field: "invoice.status", operator: "equals", value: "Open" }] },
+      sum: { name: "Selected document type open amount", functionKey: "SUMIFS", sourceField: "invoice.openAmount", conditions: initialExpression.conditions },
+      age: { name: "Oldest invoice age", functionKey: "DAYS", sourceField: "invoice.dueDate", conditions: [{ id: "condition-age", field: "invoice.status", operator: "equals", value: "Open" }] },
+      priority: { name: "Collection priority", functionKey: "IF", sourceField: "invoice.openAmount", conditions: [{ id: "condition-priority", field: "invoice.status", operator: "equals", value: "Open" }] },
+      percent: { name: "Credit utilization", functionKey: "PERCENT", sourceField: "invoice.openAmount", conditions: [{ id: "condition-percent", field: "invoice.status", operator: "equals", value: "Open" }] },
     };
     setExpression((current) => ({ ...current, ...patches[recipe] }));
     onToast("Recipe loaded. The preview has been recalculated.");
@@ -544,16 +649,18 @@ function ExpressionBuilder({
 
   return (
     <section className="builder-page page-enter">
+      <button className="back-link" onClick={onBackToLibrary}><ArrowLeft size={16} /> All calculated fields</button>
       <header className="page-title-row">
         <div>
-          <div className="title-kicker"><span className="live-dot" /> Draft · Auto-saved just now</div>
-          <h1>Create a calculated field</h1>
+          <div className="title-kicker"><span className="live-dot" /> Editing · Changes stay local until saved</div>
+          <h1>{expression.name || "Create a calculated field"}</h1>
           <p>Build with familiar spreadsheet logic. The platform translates it into governed SQL.</p>
         </div>
         <div className="page-actions">
           <button className="text-button" onClick={onShowGuide}><CircleHelp size={17} /> How to</button>
-          <button className="secondary-button" onClick={() => onToast("Draft saved for this demo session.")}><Save size={16} /> Save draft</button>
+          <button className="secondary-button" onClick={onSaveDraft}><Save size={16} /> Save draft</button>
           <button className="primary-button" onClick={onOpenSimulation}><FlaskConical size={16} /> Test on data</button>
+          <button className="publish-button" onClick={onPublish}><ShieldCheck size={16} /> Save & publish</button>
         </div>
       </header>
 
@@ -573,36 +680,41 @@ function ExpressionBuilder({
                 <div className="builder-section first-section">
                   <div className="step-number">1</div>
                   <div className="builder-section-body">
-                    <div className="section-label"><span>Output</span><small>Where should this value appear?</small></div>
+                    <div className="section-label"><span>Field details</span><small>Name the value and choose where it belongs.</small></div>
                     <div className="output-row">
                       <label className="field-control grow"><span>Field name</span><input value={expression.name} onChange={(event) => setExpression((current) => ({ ...current, name: event.target.value }))} /></label>
                       <label className="field-control compact"><span>Calculate for each</span><select value={expression.level} onChange={(event) => setExpression((current) => ({ ...current, level: event.target.value as Level }))}><option value="customer">Customer</option><option value="invoice">Invoice</option></select></label>
-                      <label className="field-control compact"><span>Returns</span><select value={expression.resultType} onChange={(event) => setExpression((current) => ({ ...current, resultType: event.target.value as ResultType }))}><option value="amount">Amount</option><option value="number">Number</option><option value="text">Text</option><option value="date">Date</option></select></label>
                     </div>
+                    <label className="field-control description-control"><span>Description</span><input value={expression.description} onChange={(event) => setExpression((current) => ({ ...current, description: event.target.value }))} placeholder="What business question does this field answer?" /></label>
                   </div>
                 </div>
 
                 <div className="builder-section">
                   <div className="step-number">2</div>
                   <div className="builder-section-body">
-                    <div className="section-label"><span>Formula</span><small>Build the calculation as a readable sentence.</small></div>
+                    <div className="section-label"><span>Calculation</span><small>Build the calculation as a readable sentence.</small></div>
                     <div className="sentence-canvas">
                       <span className="sentence-word">For each</span>
                       <span className="sentence-token entity-token">{expression.level === "customer" ? "Customer" : "Invoice"}</span>
-                      <span className="sentence-word">calculate</span>
-                      <button className="sentence-token function-token" onClick={onShowFunctions}><FunctionSquare size={16} /> {expression.functionKey}<ChevronDown size={15} /></button>
-                      {!(["COUNTIFS", "DAYS", "IF", "CONCAT", "UPPER", "LOWER", "TRIM", "COALESCE", "EOMONTH"].includes(expression.functionKey)) && (
+                      <span className="sentence-word">use</span>
+                      <button className="sentence-token function-token" onClick={onShowFunctions}><FunctionSquare size={16} /><span>{selectedFunction.label}<small>{expression.functionKey}</small></span><ChevronDown size={15} /></button>
+                      <span className="sentence-word">to {calculationPhrases[expression.functionKey]}</span>
+                      {availableSourceFields.length > 0 && (
                         <>
-                          <span className="sentence-word">of</span>
                           <label className="inline-select field-token">
                             <Database size={15} />
-                            <select value={expression.sourceField} onChange={(event) => setExpression((current) => ({ ...current, sourceField: event.target.value }))}>
-                              {numericSourceFields.map((field) => <option key={field.key} value={field.key}>{field.entity} · {field.label}</option>)}
+                            <select aria-label="Value to calculate" value={expression.sourceField} onChange={(event) => setExpression((current) => ({ ...current, sourceField: event.target.value }))}>
+                              {availableSourceFields.map((field) => <option key={field.key} value={field.key}>{field.entity} · {field.label}</option>)}
                             </select>
                           </label>
                         </>
                       )}
                     </div>
+                    {availableSourceFields.length > 0 ? (
+                      <div className="measure-explainer"><Database size={16} /><span><strong>Value to calculate: {sourceField?.entity} · {sourceField?.label}</strong>The function operates on this field. Conditions below only decide which records qualify.</span></div>
+                    ) : (
+                      <div className="measure-explainer"><Info size={16} /><span><strong>No value field needed</strong>{expression.functionKey} counts the records that match your conditions.</span></div>
+                    )}
                     <p className="function-description"><Info size={15} /> <strong>{selectedFunction.label}:</strong> {selectedFunction.description}</p>
                   </div>
                 </div>
@@ -611,7 +723,7 @@ function ExpressionBuilder({
                   <div className="step-number">3</div>
                   <div className="builder-section-body">
                     <div className="section-label condition-heading">
-                      <div><span>Conditions</span><small>Only include records that meet every condition.</small></div>
+                      <div><span>Include records where</span><small>Every condition below must be true.</small></div>
                       <button className="add-condition" onClick={() => setExpression((current) => ({ ...current, conditions: [...current.conditions, { id: `condition-${Date.now()}`, field: "invoice.documentType", operator: "equals", value: "" }] }))}><Plus size={15} /> Add condition</button>
                     </div>
                     <div className="condition-list">
@@ -649,6 +761,7 @@ function ExpressionBuilder({
               <code>{toExcelFormula(expression)}</code>
               <span className="formula-valid"><Check size={14} /> Excel equivalent</span>
             </div>
+            <div className="detected-output"><Sparkles size={17} /><span><strong>Output detected automatically: {resultTypeLabels[resultType]}</strong><small>Based on {expression.functionKey}{availableSourceFields.length > 0 && sourceField ? ` and ${sourceField.label}` : ""}. No data type selection is needed.</small></span><Check size={17} /></div>
           </section>
 
           <section className="sql-section">
@@ -677,13 +790,13 @@ function ExpressionBuilder({
 
         <aside className="live-preview">
           <header><div><span className="eyebrow">Live sample</span><h2>Calculated results</h2></div><span className="sample-badge">4 customers</span></header>
-          <div className="preview-summary"><span>Output field</span><strong>{expression.name || "Untitled field"}</strong><small>{expression.level === "customer" ? "Customer-level" : "Invoice-level"} · {expression.resultType}</small></div>
+          <div className="preview-summary"><span>Output field</span><strong>{expression.name || "Untitled field"}</strong><small>{expression.level === "customer" ? "Customer-level" : "Invoice-level"} · {resultTypeLabels[resultType]} · auto-detected</small></div>
           <div className="preview-results">
             {simulation.map(({ customer, matched, result }, index) => (
               <div className="preview-result" key={customer.customerNumber} style={{ animationDelay: `${index * 45}ms` }}>
                 <span className="customer-avatar">{customer.customerName.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
                 <span><strong>{customer.customerName}</strong><small>{matched} matching invoice{matched === 1 ? "" : "s"}</small></span>
-                <b>{formatResult(result, expression.resultType)}</b>
+                <b>{formatResult(result, resultType)}</b>
               </div>
             ))}
           </div>
@@ -695,15 +808,15 @@ function ExpressionBuilder({
   );
 }
 
-function SimulationLab({ expression, customers, invoices, onOpenCustomer }: { expression: Expression; customers: Customer[]; invoices: Invoice[]; onOpenCustomer: (customer: Customer) => void }) {
+function SimulationLab({ expression, customers, invoices, onOpenCustomer, onPublish }: { expression: Expression; customers: Customer[]; invoices: Invoice[]; onOpenCustomer: (customer: Customer) => void; onPublish: () => void }) {
   const [selected, setSelected] = useState(customers.slice(0, 3).map((customer) => customer.customerNumber));
   const results = customers.filter((customer) => selected.includes(customer.customerNumber)).map((customer) => ({ customer, result: evaluateExpression(expression, customer, invoices), invoices: invoices.filter((invoice) => invoice.customerNumber === customer.customerNumber) }));
   return (
     <section className="standard-page page-enter">
-      <header className="page-title-row"><div><div className="title-kicker"><FlaskConical size={14} /> Safe sample run</div><h1>Simulation Lab</h1><p>Validate the expression on a focused customer set before publishing it.</p></div><button className="primary-button"><ShieldCheck size={16} /> Approve for publish</button></header>
+      <header className="page-title-row"><div><div className="title-kicker"><FlaskConical size={14} /> Safe sample run</div><h1>Simulation Lab</h1><p>Validate the expression on a focused customer set before publishing it.</p></div><button className="primary-button" onClick={onPublish}><ShieldCheck size={16} /> Approve & publish</button></header>
       <div className="simulation-layout">
         <section className="simulation-picker surface-panel"><header><div><span className="eyebrow">Step 1</span><h2>Select customers</h2></div><span>{selected.length} selected</span></header><label className="search-field"><Search size={16} /><input placeholder="Find a customer" /></label><div className="customer-check-list">{customers.map((customer) => <label key={customer.customerNumber} className={selected.includes(customer.customerNumber) ? "checked" : ""}><input type="checkbox" checked={selected.includes(customer.customerNumber)} onChange={() => setSelected((current) => current.includes(customer.customerNumber) ? current.filter((item) => item !== customer.customerNumber) : [...current, customer.customerNumber])} /><span className="customer-avatar">{customer.customerName.slice(0, 2).toUpperCase()}</span><span><strong>{customer.customerName}</strong><small>{customer.customerNumber} · {customer.region}</small></span><Check size={16} /></label>)}</div></section>
-        <section className="simulation-results surface-panel"><header><div><span className="eyebrow">Step 2</span><h2>Review results</h2></div><span className="validation-state"><Check size={15} /> Run complete</span></header><div className="sim-formula"><span>fx</span><code>{toExcelFormula(expression)}</code></div><div className="sim-result-list">{results.map(({ customer, result, invoices: customerInvoices }) => <button key={customer.customerNumber} onDoubleClick={() => onOpenCustomer(customer)} onClick={() => onOpenCustomer(customer)}><span><strong>{customer.customerName}</strong><small>{customerInvoices.length} total invoices · {customer.risk} risk</small></span><span className="sim-value"><strong>{formatResult(result, expression.resultType)}</strong><small>{expression.name}</small></span><ChevronRight size={17} /></button>)}</div></section>
+        <section className="simulation-results surface-panel"><header><div><span className="eyebrow">Step 2</span><h2>Review results</h2></div><span className="validation-state"><Check size={15} /> Run complete</span></header><div className="sim-formula"><span>fx</span><code>{toExcelFormula(expression)}</code></div><div className="sim-result-list">{results.map(({ customer, result, invoices: customerInvoices }) => <button key={customer.customerNumber} onDoubleClick={() => onOpenCustomer(customer)} onClick={() => onOpenCustomer(customer)}><span><strong>{customer.customerName}</strong><small>{customerInvoices.length} total invoices · {customer.risk} risk</small></span><span className="sim-value"><strong>{formatResult(result, inferResultType(expression))}</strong><small>{expression.name}</small></span><ChevronRight size={17} /></button>)}</div></section>
       </div>
     </section>
   );
@@ -718,7 +831,7 @@ function CustomerGrid({ customers, invoices, expression, onOpenCustomer, onUploa
     { key: "customerNumber", label: "Customer #", width: 130, value: (row) => row.customerNumber, render: (row) => <strong className="grid-primary">{row.customerNumber}</strong> },
     { key: "customerName", label: "Customer name", width: 240, value: (row) => row.customerName, render: (row) => <span className="name-cell"><span className="tiny-avatar">{row.customerName.slice(0, 2).toUpperCase()}</span><strong>{row.customerName}</strong></span> },
     { key: "open", label: "Total open", width: 140, align: "right", value: (row) => invoices.filter((invoice) => invoice.customerNumber === row.customerNumber).reduce((sum, invoice) => sum + invoice.openAmount, 0), render: (row) => <strong>{money.format(invoices.filter((invoice) => invoice.customerNumber === row.customerNumber).reduce((sum, invoice) => sum + invoice.openAmount, 0))}</strong> },
-    { key: "calculated", label: expression.name, width: 210, align: "right", value: (row) => String(evaluateExpression(expression, row, invoices)), render: (row) => <span className="calculated-cell">{formatResult(evaluateExpression(expression, row, invoices), expression.resultType)}<span>fx</span></span> },
+    { key: "calculated", label: expression.name, width: 210, align: "right", value: (row) => String(evaluateExpression(expression, row, invoices)), render: (row) => <span className="calculated-cell">{formatResult(evaluateExpression(expression, row, invoices), inferResultType(expression))}<span>fx</span></span> },
     { key: "risk", label: "Risk", width: 100, value: (row) => row.risk, render: (row) => <StatusPill value={row.risk} /> },
     { key: "collector", label: "Collector", width: 155, value: (row) => row.collector },
     { key: "region", label: "Region", width: 110, value: (row) => row.region },
@@ -773,9 +886,10 @@ function CustomerDetail({ customer, invoices, expression, onBack }: { customer: 
 export default function Home() {
   const [customers, setCustomers] = useState(seedCustomers);
   const [invoices, setInvoices] = useState(seedInvoices);
-  const [expression, setExpressionState] = useState(initialExpression);
-  const [tabs, setTabs] = useState<WorkspaceTab[]>([{ id: "builder", label: "Expression Studio", kind: "view", view: "builder" }]);
-  const [activeTabId, setActiveTabId] = useState("builder");
+  const [savedExpressions, setSavedExpressions] = useState(seedExpressions);
+  const [expression, setExpressionState] = useState<Expression>(initialExpression);
+  const [tabs, setTabs] = useState<WorkspaceTab[]>([{ id: "expressions", label: "Expression Studio", kind: "view", view: "expressions" }]);
+  const [activeTabId, setActiveTabId] = useState("expressions");
   const [showGuide, setShowGuide] = useState(false);
   const [showFunctions, setShowFunctions] = useState(false);
   const [uploadType, setUploadType] = useState<UploadType | null>(null);
@@ -784,7 +898,10 @@ export default function Home() {
   const activeView = activeTab?.kind === "view" ? activeTab.view : undefined;
 
   function setExpression(updater: (current: Expression) => Expression) {
-    setExpressionState((current) => updater(current));
+    setExpressionState((current) => {
+      const next = updater(current);
+      return { ...next, resultType: inferResultType(next) };
+    });
   }
 
   function showToast(message: string) {
@@ -796,6 +913,51 @@ export default function Home() {
     const id = view;
     setTabs((current) => current.some((tab) => tab.id === id) ? current : [...current, { id, label: viewLabels[view], kind: "view", view }]);
     setActiveTabId(id);
+  }
+
+  function openEditor(field: Expression) {
+    const next = { ...field, conditions: field.conditions.map((condition) => ({ ...condition })) };
+    setExpressionState({ ...next, resultType: inferResultType(next) });
+    setTabs((current) => {
+      const editorTab = { id: "builder", label: field.name || "New calculated field", kind: "view" as const, view: "builder" as const };
+      return current.some((tab) => tab.id === "builder")
+        ? current.map((tab) => tab.id === "builder" ? editorTab : tab)
+        : [...current, editorTab];
+    });
+    setActiveTabId("builder");
+  }
+
+  function createExpression() {
+    openEditor({
+      id: `expr-${Date.now()}`,
+      name: "Untitled calculated field",
+      description: "",
+      level: "customer",
+      resultType: "amount",
+      functionKey: "SUMIFS",
+      sourceField: "invoice.openAmount",
+      conditions: [{ id: `condition-${Date.now()}`, field: "invoice.status", operator: "equals", value: "Open" }],
+    });
+  }
+
+  function saveExpression(status: SavedExpression["status"]) {
+    const saved: SavedExpression = {
+      ...expression,
+      resultType: inferResultType(expression),
+      status,
+      updatedAt: "Just now",
+      usedIn: savedExpressions.find((field) => field.id === expression.id)?.usedIn ?? 0,
+    };
+    setSavedExpressions((current) => current.some((field) => field.id === saved.id)
+      ? current.map((field) => field.id === saved.id ? saved : field)
+      : [saved, ...current]);
+    showToast(status === "Published" ? `${saved.name} published and ready to use.` : `${saved.name} saved to calculated fields.`);
+    navigate("expressions");
+  }
+
+  function runExpression(field: Expression) {
+    setExpressionState({ ...field, resultType: inferResultType(field), conditions: field.conditions.map((condition) => ({ ...condition })) });
+    navigate("simulation");
   }
 
   function openCustomer(customer: Customer) {
@@ -817,10 +979,11 @@ export default function Home() {
       const customer = customers.find((item) => item.customerNumber === activeTab.customerNumber) ?? customers[0];
       return <CustomerDetail customer={customer} invoices={invoices} expression={expression} onBack={() => navigate("customers")} />;
     }
+    if (activeView === "expressions") return <CalculatedFieldsLibrary fields={savedExpressions} onNew={createExpression} onEdit={openEditor} onRun={runExpression} onShowGuide={() => setShowGuide(true)} />;
     if (activeView === "customers") return <CustomerGrid customers={customers} invoices={invoices} expression={expression} onOpenCustomer={openCustomer} onUpload={() => setUploadType("customer")} />;
     if (activeView === "invoices") return <InvoiceGrid invoices={invoices} onOpenCustomer={(customerNumber) => { const customer = customers.find((item) => item.customerNumber === customerNumber); if (customer) openCustomer(customer); }} onUpload={() => setUploadType("invoice")} />;
-    if (activeView === "simulation") return <SimulationLab expression={expression} customers={customers} invoices={invoices} onOpenCustomer={openCustomer} />;
-    return <ExpressionBuilder expression={expression} setExpression={setExpression} customers={customers} invoices={invoices} onShowGuide={() => setShowGuide(true)} onShowFunctions={() => setShowFunctions(true)} onOpenSimulation={() => navigate("simulation")} onToast={showToast} />;
+    if (activeView === "simulation") return <SimulationLab expression={expression} customers={customers} invoices={invoices} onOpenCustomer={openCustomer} onPublish={() => saveExpression("Published")} />;
+    return <ExpressionBuilder expression={expression} setExpression={setExpression} customers={customers} invoices={invoices} onShowGuide={() => setShowGuide(true)} onShowFunctions={() => setShowFunctions(true)} onOpenSimulation={() => navigate("simulation")} onBackToLibrary={() => navigate("expressions")} onSaveDraft={() => saveExpression("Draft")} onPublish={() => saveExpression("Published")} onToast={showToast} />;
   }
 
   return (
@@ -830,7 +993,7 @@ export default function Home() {
         <a className="product-switcher" href="/" aria-label="Collections home"><span className="bento-mark"><Grid3X3 size={19} /></span><span><strong>Collections</strong><small>Administration</small></span></a>
         <nav className="primary-nav" aria-label="Administration navigation">
           <span className="nav-label">Build</span>
-          {(["builder", "simulation"] as View[]).map((view) => <button key={view} className={activeView === view ? "active" : ""} onClick={() => navigate(view)}>{viewIcons[view]}<span>{viewLabels[view]}</span>{view === "builder" && <small>NEW</small>}</button>)}
+          {(["expressions", "simulation"] as View[]).map((view) => <button key={view} className={activeView === view || (view === "expressions" && activeView === "builder") ? "active" : ""} onClick={() => navigate(view)}>{viewIcons[view]}<span>{viewLabels[view]}</span>{view === "expressions" && <small>NEW</small>}</button>)}
           <span className="nav-label data-label">Data</span>
           {(["customers", "invoices"] as View[]).map((view) => <button key={view} className={activeView === view ? "active" : ""} onClick={() => navigate(view)}>{viewIcons[view]}<span>{viewLabels[view]}</span><b>{view === "customers" ? customers.length : invoices.length}</b></button>)}
         </nav>
@@ -839,12 +1002,16 @@ export default function Home() {
 
       <section className="app-workspace">
         <header className="global-bar"><div className="environment"><span>Acme Demo Environment</span><ChevronDown size={15} /></div><div className="global-actions"><button className="dataset-status"><span className="live-dot" /> Demo data active</button><IconButton label="Administration settings"><Settings2 size={18} /></IconButton><button className="howto-top" onClick={() => setShowGuide(true)}><CircleHelp size={17} /> How to</button></div></header>
-        <div className="workspace-tabs" role="tablist">{tabs.map((tab) => <div className="workspace-tab-wrap" key={tab.id}><button className={`workspace-tab ${tab.id === activeTabId ? "active" : ""}`} onClick={() => setActiveTabId(tab.id)} role="tab" aria-selected={tab.id === activeTabId}>{tab.kind === "customer" ? <Users size={14} /> : viewIcons[tab.view ?? "builder"]}<span>{tab.label}</span></button>{tabs.length > 1 && <button className="tab-close" onClick={() => closeTab(tab.id)} aria-label={`Close ${tab.label} tab`} title={`Close ${tab.label} tab`}><X size={13} /></button>}</div>)}</div>
+        <div className="workspace-tabs" role="tablist">{tabs.map((tab) => <div className="workspace-tab-wrap" key={tab.id}><button className={`workspace-tab ${tab.id === activeTabId ? "active" : ""}`} onClick={() => setActiveTabId(tab.id)} role="tab" aria-selected={tab.id === activeTabId}>{tab.kind === "customer" ? <Users size={14} /> : viewIcons[tab.view ?? "expressions"]}<span>{tab.label}</span></button>{tabs.length > 1 && <button className="tab-close" onClick={() => closeTab(tab.id)} aria-label={`Close ${tab.label} tab`} title={`Close ${tab.label} tab`}><X size={13} /></button>}</div>)}</div>
         <div className="page-container">{renderActiveTab()}</div>
       </section>
 
       {showGuide && <HowToDrawer onClose={() => setShowGuide(false)} />}
-      {showFunctions && <FunctionLibrary selected={expression.functionKey} onSelect={(functionKey) => setExpression((current) => ({ ...current, functionKey, resultType: resultTypeForFunction(functionKey) }))} onClose={() => setShowFunctions(false)} />}
+      {showFunctions && <FunctionLibrary selected={expression.functionKey} onSelect={(functionKey) => setExpression((current) => {
+        const candidates = sourceFieldsForFunction(functionKey);
+        const sourceField = candidates.some((field) => field.key === current.sourceField) ? current.sourceField : candidates[0]?.key ?? current.sourceField;
+        return { ...current, functionKey, sourceField };
+      })} onClose={() => setShowFunctions(false)} />}
       {uploadType && <UploadModal initialType={uploadType} customers={customers} onUploadCustomers={(rows) => { setCustomers((current) => [...current, ...rows]); showToast(`${rows.length} customers uploaded successfully.`); }} onUploadInvoices={(rows) => { setInvoices((current) => [...current, ...rows]); showToast(`${rows.length} invoices uploaded successfully.`); }} onClose={() => setUploadType(null)} />}
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
     </main>

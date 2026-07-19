@@ -21,7 +21,8 @@ test("server-renders the Expression Studio application", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Collections Expression Studio<\/title>/i);
-  assert.match(html, /Create a calculated field/i);
+  assert.match(html, /Calculated fields/i);
+  assert.match(html, /New calculated field/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Your site is taking shape/i);
 });
 
@@ -35,12 +36,17 @@ test("ships the builder, data schema, and product story", async () => {
   ]);
 
   assert.match(page, /ExpressionBuilder/);
+  assert.match(page, /CalculatedFieldsLibrary/);
   assert.match(page, /HowToDrawer/);
   assert.match(page, /UploadModal/);
+  assert.match(data, /inferResultType/);
+  assert.match(data, /seedExpressions/);
   assert.match(data, /number: Array\.from\(\{ length: 10 \}/);
   assert.match(data, /text: Array\.from\(\{ length: 10 \}/);
   assert.match(data, /date: Array\.from\(\{ length: 10 \}/);
   assert.match(story, /A simple SUMIF should not require a data journey/);
+  assert.match(story, /Custom code/);
+  assert.match(story, /StoryMotion/);
   assert.match(layout, /openGraph/);
   assert.match(packageJson, /lucide-react/);
 });
