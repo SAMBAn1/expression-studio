@@ -36,7 +36,6 @@ import {
   WandSparkles,
   X,
 } from "lucide-react";
-import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
@@ -827,7 +826,8 @@ export default function Home() {
   return (
     <main className="app-shell">
       <aside className="app-sidebar">
-        <Link className="product-switcher" href="/" aria-label="Collections home"><span className="bento-mark"><Grid3X3 size={19} /></span><span><strong>Collections</strong><small>Administration</small></span></Link>
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a className="product-switcher" href="/" aria-label="Collections home"><span className="bento-mark"><Grid3X3 size={19} /></span><span><strong>Collections</strong><small>Administration</small></span></a>
         <nav className="primary-nav" aria-label="Administration navigation">
           <span className="nav-label">Build</span>
           {(["builder", "simulation"] as View[]).map((view) => <button key={view} className={activeView === view ? "active" : ""} onClick={() => navigate(view)}>{viewIcons[view]}<span>{viewLabels[view]}</span>{view === "builder" && <small>NEW</small>}</button>)}
