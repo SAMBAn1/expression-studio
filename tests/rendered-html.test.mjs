@@ -39,8 +39,14 @@ test("ships the builder, data schema, and product story", async () => {
   assert.match(page, /CalculatedFieldsLibrary/);
   assert.match(page, /HowToDrawer/);
   assert.match(page, /UploadModal/);
+  assert.match(page, /Add OR group/);
+  assert.match(page, /operatorsByKind/);
+  assert.match(page, /function-ready/);
   assert.match(data, /inferResultType/);
   assert.match(data, /seedExpressions/);
+  assert.match(data, /sameLevelMathFunctionKeys/);
+  assert.match(data, /conditionGroups/);
+  assert.match(data, /DIFFERENCE/);
   assert.match(data, /number: Array\.from\(\{ length: 10 \}/);
   assert.match(data, /text: Array\.from\(\{ length: 10 \}/);
   assert.match(data, /date: Array\.from\(\{ length: 10 \}/);

@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 
 const capabilities = [
   ["Conditional aggregation", "SUMIFS, COUNTIFS, AVERAGEIFS", "FILTER, CASE, SUM, COUNT, AVG", "PoC"],
-  ["Math", "SUM, MIN, MAX, ROUND, ABS, percentages", "Native numeric functions", "PoC"],
+  ["Math", "SUM, AVERAGE, DIFFERENCE, PRODUCT, MIN, MAX, ROUND, ABS, percentages", "Same-level numeric expressions", "PoC"],
   ["Logic", "IF, IFS, IFERROR", "CASE, COALESCE", "PoC"],
   ["Dates", "DAYS, DATEDIF, EOMONTH", "Date arithmetic, DATE_TRUNC", "PoC"],
   ["Text", "CONCAT, UPPER, LOWER, TRIM", "String functions", "PoC"],

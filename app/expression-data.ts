@@ -4,6 +4,10 @@ export type FunctionKey =
   | "SUMIFS"
   | "COUNTIFS"
   | "AVERAGEIFS"
+  | "SUM"
+  | "AVERAGE"
+  | "DIFFERENCE"
+  | "PRODUCT"
   | "MIN"
   | "MAX"
   | "IF"
@@ -25,6 +29,13 @@ export type Operator =
   | "not_in"
   | "greater_than"
   | "less_than"
+  | "greater_or_equal"
+  | "less_or_equal"
+  | "between"
+  | "before"
+  | "after"
+  | "on_or_before"
+  | "on_or_after"
   | "contains"
   | "is_blank";
 
@@ -61,6 +72,12 @@ export type Condition = {
   field: string;
   operator: Operator;
   value: string;
+  secondValue?: string;
+};
+
+export type ConditionGroup = {
+  id: string;
+  conditions: Condition[];
 };
 
 export type Expression = {
@@ -71,7 +88,9 @@ export type Expression = {
   resultType: ResultType;
   functionKey: FunctionKey;
   sourceField: string;
+  sourceFields?: string[];
   conditions: Condition[];
+  conditionGroups?: ConditionGroup[];
 };
 
 export type SavedExpression = Expression & {
@@ -101,11 +120,15 @@ export const functionCatalog: FunctionDefinition[] = [
   { key: "SUMIFS", label: "Conditional sum", category: "Conditional", description: "Add values that match one or more conditions.", excelExample: "SUMIFS(sum_range, criteria_range, criteria)", sqlPattern: "SUM(CASE WHEN ... THEN value END)" },
   { key: "COUNTIFS", label: "Conditional count", category: "Conditional", description: "Count records that match one or more conditions.", excelExample: "COUNTIFS(criteria_range, criteria)", sqlPattern: "COUNT(*) FILTER (WHERE ...)" },
   { key: "AVERAGEIFS", label: "Conditional average", category: "Conditional", description: "Average values for records that meet your conditions.", excelExample: "AVERAGEIFS(avg_range, criteria_range, criteria)", sqlPattern: "AVG(value) FILTER (WHERE ...)" },
-  { key: "MIN", label: "Minimum", category: "Math", description: "Return the smallest value in the selected scope.", excelExample: "MIN(range)", sqlPattern: "MIN(value)" },
-  { key: "MAX", label: "Maximum", category: "Math", description: "Return the largest value in the selected scope.", excelExample: "MAX(range)", sqlPattern: "MAX(value)" },
-  { key: "ROUND", label: "Round", category: "Math", description: "Round a number to a fixed number of decimals.", excelExample: "ROUND(number, digits)", sqlPattern: "ROUND(value, digits)" },
-  { key: "ABS", label: "Absolute value", category: "Math", description: "Return a number without its sign.", excelExample: "ABS(number)", sqlPattern: "ABS(value)" },
-  { key: "PERCENT", label: "Percentage", category: "Math", description: "Calculate a ratio and return it as a percentage.", excelExample: "part / total * 100", sqlPattern: "part / NULLIF(total, 0) * 100" },
+  { key: "SUM", label: "Add fields", category: "Math", description: "Add two or more fields from the same data level.", excelExample: "SUM(value_1, value_2)", sqlPattern: "value_1 + value_2" },
+  { key: "AVERAGE", label: "Average fields", category: "Math", description: "Average two or more fields from the same data level.", excelExample: "AVERAGE(value_1, value_2)", sqlPattern: "(value_1 + value_2) / 2" },
+  { key: "DIFFERENCE", label: "Difference", category: "Math", description: "Subtract one same-level field from another.", excelExample: "value_1 - value_2", sqlPattern: "value_1 - value_2" },
+  { key: "PRODUCT", label: "Product", category: "Math", description: "Multiply two or more fields from the same data level.", excelExample: "PRODUCT(value_1, value_2)", sqlPattern: "value_1 * value_2" },
+  { key: "MIN", label: "Minimum", category: "Math", description: "Return the smallest of the selected same-level fields.", excelExample: "MIN(value_1, value_2)", sqlPattern: "LEAST(value_1, value_2)" },
+  { key: "MAX", label: "Maximum", category: "Math", description: "Return the largest of the selected same-level fields.", excelExample: "MAX(value_1, value_2)", sqlPattern: "GREATEST(value_1, value_2)" },
+  { key: "ROUND", label: "Round", category: "Math", description: "Round a same-level field to a fixed number of decimals.", excelExample: "ROUND(number, digits)", sqlPattern: "ROUND(value, digits)" },
+  { key: "ABS", label: "Absolute value", category: "Math", description: "Return a same-level number without its sign.", excelExample: "ABS(number)", sqlPattern: "ABS(value)" },
+  { key: "PERCENT", label: "Percentage", category: "Math", description: "Calculate one same-level field as a percentage of another.", excelExample: "part / total * 100", sqlPattern: "part / NULLIF(total, 0) * 100" },
   { key: "IF", label: "If / then", category: "Logic", description: "Return one value when a condition is true and another when false.", excelExample: "IF(test, value_if_true, value_if_false)", sqlPattern: "CASE WHEN ... THEN ... ELSE ... END" },
   { key: "COALESCE", label: "First non-blank", category: "Logic", description: "Use the first available value from a list of fields.", excelExample: "IFERROR(value, fallback)", sqlPattern: "COALESCE(value, fallback)" },
   { key: "DAYS", label: "Days between", category: "Date", description: "Calculate the number of days between two dates.", excelExample: "DAYS(end_date, start_date)", sqlPattern: "DATE_PART('day', end_date - start_date)" },
@@ -169,7 +192,7 @@ export const referenceHeaders = {
 };
 
 function refs(values: Partial<ReferenceValues>): ReferenceValues {
-  return values;
+  return values as ReferenceValues;
 }
 
 export const seedCustomers: Customer[] = [
@@ -205,6 +228,13 @@ export const initialExpression: Expression = {
     { id: "condition-1", field: "invoice.documentType", operator: "in", value: "RV, DZ" },
     { id: "condition-2", field: "invoice.status", operator: "equals", value: "Open" },
   ],
+  conditionGroups: [{
+    id: "group-1",
+    conditions: [
+      { id: "condition-1", field: "invoice.documentType", operator: "in", value: "RV, DZ" },
+      { id: "condition-2", field: "invoice.status", operator: "equals", value: "Open" },
+    ],
+  }],
 };
 
 export const seedExpressions: SavedExpression[] = [
@@ -241,22 +271,53 @@ export const seedExpressions: SavedExpression[] = [
     usedIn: 0,
   },
   {
-    id: "expr-credit-utilization",
-    name: "Credit utilization",
-    description: "Open amount as a percentage of customer credit limit.",
-    level: "customer",
-    resultType: "number",
-    functionKey: "PERCENT",
-    sourceField: "invoice.openAmount",
-    conditions: [{ id: "condition-percent", field: "invoice.status", operator: "equals", value: "Open" }],
+    id: "expr-applied-invoice-amount",
+    name: "Applied invoice amount",
+    description: "Invoice amount minus the remaining open amount.",
+    level: "invoice",
+    resultType: "amount",
+    functionKey: "DIFFERENCE",
+    sourceField: "invoice.invoiceAmount",
+    sourceFields: ["invoice.invoiceAmount", "invoice.openAmount"],
+    conditions: [],
     status: "Published",
     updatedAt: "Jul 15, 2:31 PM",
     usedIn: 4,
   },
 ];
 
-export function sourceFieldsForFunction(functionKey: FunctionKey) {
+export const conditionalFunctionKeys: FunctionKey[] = ["SUMIFS", "COUNTIFS", "AVERAGEIFS"];
+export const sameLevelMathFunctionKeys: FunctionKey[] = ["SUM", "AVERAGE", "DIFFERENCE", "PRODUCT", "MIN", "MAX", "ROUND", "ABS", "PERCENT"];
+
+export function isConditionalFunction(functionKey: FunctionKey) {
+  return conditionalFunctionKeys.includes(functionKey);
+}
+
+export function isSameLevelMathFunction(functionKey: FunctionKey) {
+  return sameLevelMathFunctionKeys.includes(functionKey);
+}
+
+export function getExpressionSourceFields(expression: Expression) {
+  return expression.sourceFields?.length
+    ? expression.sourceFields
+    : [expression.sourceField].filter(Boolean);
+}
+
+export function getConditionGroups(expression: Expression): ConditionGroup[] {
+  if (expression.conditionGroups?.length) return expression.conditionGroups;
+  return [{ id: "group-1", conditions: expression.conditions ?? [] }];
+}
+
+export function sourceFieldsForFunction(functionKey: FunctionKey, level: Level = "customer") {
   if (functionKey === "COUNTIFS") return [];
+  if (isConditionalFunction(functionKey)) {
+    if (level === "invoice") return [];
+    return fieldCatalog.filter((field) => field.entity === "Invoice" && (field.kind === "amount" || field.kind === "number"));
+  }
+  if (isSameLevelMathFunction(functionKey)) {
+    const entity = level === "customer" ? "Customer" : "Invoice";
+    return fieldCatalog.filter((field) => field.entity === entity && (field.kind === "amount" || field.kind === "number"));
+  }
   if (["DAYS", "EOMONTH"].includes(functionKey)) return fieldCatalog.filter((field) => field.kind === "date");
   if (["CONCAT", "UPPER", "LOWER", "TRIM", "COALESCE"].includes(functionKey)) return fieldCatalog.filter((field) => field.kind === "text");
   return fieldCatalog.filter((field) => field.kind === "amount" || field.kind === "number");
@@ -265,8 +326,14 @@ export function sourceFieldsForFunction(functionKey: FunctionKey) {
 export function inferResultType(expression: Expression): ResultType {
   if (["IF", "CONCAT", "UPPER", "LOWER", "TRIM", "COALESCE"].includes(expression.functionKey)) return "text";
   if (expression.functionKey === "EOMONTH") return "date";
-  if (["COUNTIFS", "DAYS", "PERCENT"].includes(expression.functionKey)) return "number";
-  const sourceKind = fieldCatalog.find((field) => field.key === expression.sourceField)?.kind;
+  if (["COUNTIFS", "DAYS", "PERCENT", "PRODUCT"].includes(expression.functionKey)) return "number";
+  const sourceKinds = getExpressionSourceFields(expression)
+    .map((key) => fieldCatalog.find((field) => field.key === key)?.kind)
+    .filter(Boolean);
+  if (isSameLevelMathFunction(expression.functionKey) && sourceKinds.length) {
+    return sourceKinds.every((kind) => kind === "amount") ? "amount" : "number";
+  }
+  const sourceKind = sourceKinds[0];
   return sourceKind === "amount" ? "amount" : sourceKind === "date" ? "date" : sourceKind === "text" ? "text" : "number";
 }
 
@@ -288,6 +355,7 @@ export function matchesCondition(condition: Condition, customer: Customer, invoi
   const raw = getFieldValue(condition.field, customer, invoice);
   const target = String(raw ?? "").toLowerCase();
   const value = condition.value.toLowerCase();
+  const fieldKind = fieldCatalog.find((field) => field.key === condition.field)?.kind;
   if (condition.operator === "equals") return target === value;
   if (condition.operator === "not_equals") return target !== value;
   if (condition.operator === "contains") return target.includes(value);
@@ -299,24 +367,53 @@ export function matchesCondition(condition: Condition, customer: Customer, invoi
   }
   if (condition.operator === "greater_than") return Number(raw) > Number(condition.value);
   if (condition.operator === "less_than") return Number(raw) < Number(condition.value);
+  if (condition.operator === "greater_or_equal") return Number(raw) >= Number(condition.value);
+  if (condition.operator === "less_or_equal") return Number(raw) <= Number(condition.value);
+  if (condition.operator === "between") {
+    if (fieldKind === "date") return target >= value && target <= String(condition.secondValue ?? "").toLowerCase();
+    return Number(raw) >= Number(condition.value) && Number(raw) <= Number(condition.secondValue);
+  }
+  if (condition.operator === "before") return target < value;
+  if (condition.operator === "after") return target > value;
+  if (condition.operator === "on_or_before") return target <= value;
+  if (condition.operator === "on_or_after") return target >= value;
   return true;
 }
 
-export function evaluateExpression(expression: Expression, customer: Customer, invoices: Invoice[]) {
+export function matchesExpressionConditions(expression: Expression, customer: Customer, invoice?: Invoice) {
+  return getConditionGroups(expression).some((group) =>
+    group.conditions.every((condition) => matchesCondition(condition, customer, invoice)),
+  );
+}
+
+export function evaluateExpression(expression: Expression, customer: Customer, invoices: Invoice[], currentInvoice?: Invoice) {
+  if (isSameLevelMathFunction(expression.functionKey)) {
+    const sourceFields = getExpressionSourceFields(expression);
+    const rowInvoice = currentInvoice ?? (expression.level === "invoice" ? invoices.find((invoice) => invoice.customerNumber === customer.customerNumber) : undefined);
+    const values = sourceFields.map((field) => Number(getFieldValue(field, customer, rowInvoice) || 0));
+    const total = values.reduce((sum, value) => sum + value, 0);
+    switch (expression.functionKey) {
+      case "SUM": return total;
+      case "AVERAGE": return values.length ? total / values.length : 0;
+      case "DIFFERENCE": return values.slice(1).reduce((result, value) => result - value, values[0] ?? 0);
+      case "PRODUCT": return values.length ? values.reduce((result, value) => result * value, 1) : 0;
+      case "MIN": return values.length ? Math.min(...values) : 0;
+      case "MAX": return values.length ? Math.max(...values) : 0;
+      case "ROUND": return Math.round(values[0] ?? 0);
+      case "ABS": return Math.abs(values[0] ?? 0);
+      case "PERCENT": return values[1] ? ((values[0] ?? 0) / values[1]) * 100 : 0;
+    }
+  }
+
   const scoped = invoices.filter((invoice) =>
     invoice.customerNumber === customer.customerNumber &&
-    expression.conditions.every((condition) => matchesCondition(condition, customer, invoice)),
+    matchesExpressionConditions(expression, customer, invoice),
   );
   const values = scoped.map((invoice) => Number(getFieldValue(expression.sourceField, customer, invoice) || 0));
   const total = values.reduce((sum, value) => sum + value, 0);
   switch (expression.functionKey) {
     case "COUNTIFS": return scoped.length;
     case "AVERAGEIFS": return values.length ? total / values.length : 0;
-    case "MIN": return values.length ? Math.min(...values) : 0;
-    case "MAX": return values.length ? Math.max(...values) : 0;
-    case "ROUND": return Math.round(total);
-    case "ABS": return Math.abs(total);
-    case "PERCENT": return customer.creditLimit ? (total / customer.creditLimit) * 100 : 0;
     case "DAYS": {
       const oldest = scoped.map((invoice) => Math.max(0, Math.round((new Date("2026-07-20").getTime() - new Date(invoice.dueDate).getTime()) / 86400000)));
       return oldest.length ? Math.max(...oldest) : 0;
@@ -338,25 +435,62 @@ export function formatResult(value: string | number, resultType: ResultType) {
   return String(value);
 }
 
-function excelValue(condition: Condition) {
-  if (condition.operator === "in") {
-    return `{${condition.value.split(",").map((item) => `"${item.trim()}"`).join(",")}}`;
+function excelValue(condition: Condition, value = condition.value) {
+  if (condition.operator === "in" || condition.operator === "not_in") {
+    return `{${value.split(",").map((item) => `"${item.trim()}"`).join(",")}}`;
   }
-  return `"${condition.value}"`;
+  const kind = fieldCatalog.find((field) => field.key === condition.field)?.kind;
+  return kind === "number" || kind === "amount" ? value : `"${value}"`;
+}
+
+function excelCriteria(condition: Condition) {
+  const label = fieldCatalog.find((field) => field.key === condition.field)?.label ?? condition.field;
+  const quotedCriterion = (prefix: string, value: string) => `"${prefix}${value}"`;
+  if (condition.operator === "between") {
+    return [label, quotedCriterion(">=", condition.value), label, quotedCriterion("<=", condition.secondValue ?? "")];
+  }
+  if (condition.operator === "not_equals") return [label, quotedCriterion("<>", condition.value)];
+  if (condition.operator === "greater_than" || condition.operator === "after") return [label, quotedCriterion(">", condition.value)];
+  if (condition.operator === "less_than" || condition.operator === "before") return [label, quotedCriterion("<", condition.value)];
+  if (condition.operator === "greater_or_equal" || condition.operator === "on_or_after") return [label, quotedCriterion(">=", condition.value)];
+  if (condition.operator === "less_or_equal" || condition.operator === "on_or_before") return [label, quotedCriterion("<=", condition.value)];
+  if (condition.operator === "contains") return [label, `"*${condition.value}*"`];
+  if (condition.operator === "is_blank") return [label, '""'];
+  if (condition.operator === "not_in") {
+    return condition.value.split(",").flatMap((item) => [label, quotedCriterion("<>", item.trim())]);
+  }
+  return [label, excelValue(condition)];
 }
 
 export function toExcelFormula(expression: Expression) {
-  const source = fieldCatalog.find((field) => field.key === expression.sourceField)?.label ?? expression.sourceField;
-  const criteria = expression.conditions.flatMap((condition) => {
-    const label = fieldCatalog.find((field) => field.key === condition.field)?.label ?? condition.field;
-    return [label, excelValue(condition)];
-  });
+  const sourceFields = getExpressionSourceFields(expression);
+  const sourceLabels = sourceFields.map((key) => fieldCatalog.find((field) => field.key === key)?.label ?? key);
+  const source = sourceLabels[0] ?? expression.sourceField;
+  if (isSameLevelMathFunction(expression.functionKey)) {
+    if (expression.functionKey === "SUM") return `=SUM(${sourceLabels.join(", ")})`;
+    if (expression.functionKey === "AVERAGE") return `=AVERAGE(${sourceLabels.join(", ")})`;
+    if (expression.functionKey === "DIFFERENCE") return `=${sourceLabels.join(" - ")}`;
+    if (expression.functionKey === "PRODUCT") return `=PRODUCT(${sourceLabels.join(", ")})`;
+    if (expression.functionKey === "PERCENT") return `=${sourceLabels[0]} / ${sourceLabels[1]} * 100`;
+    return `=${expression.functionKey}(${sourceLabels.join(", ")})`;
+  }
+
+  const criteriaForGroup = (group: ConditionGroup) => group.conditions.flatMap(excelCriteria);
+  const groups = getConditionGroups(expression);
+  const criteria = criteriaForGroup(groups[0]);
+  if (isConditionalFunction(expression.functionKey) && groups.length > 1) {
+    const formulas = groups.map((group) => {
+      const groupCriteria = criteriaForGroup(group).join(", ");
+      if (expression.functionKey === "COUNTIFS") return `COUNTIFS(${groupCriteria})`;
+      return `${expression.functionKey}(${source}, ${groupCriteria})`;
+    });
+    return `=SUM(${formulas.join(", ")})`;
+  }
   if (expression.functionKey === "COUNTIFS") return `=COUNTIFS(${criteria.join(", ")})`;
   if (expression.functionKey === "AVERAGEIFS") return `=AVERAGEIFS(${source}, ${criteria.join(", ")})`;
   if (expression.functionKey === "IF") return `=IF(${source}>20%*Credit limit, "Priority", "Standard")`;
   if (expression.functionKey === "DAYS") return "=MAX(DAYS(TODAY(), Due date))";
   if (["CONCAT", "UPPER", "LOWER", "TRIM"].includes(expression.functionKey)) return `=${expression.functionKey}(${source})`;
-  if (expression.functionKey === "PERCENT") return `=SUMIFS(${source}, ${criteria.join(", ")}) / Credit limit * 100`;
   if (["MIN", "MAX", "ROUND", "ABS", "EOMONTH", "COALESCE"].includes(expression.functionKey)) return `=${expression.functionKey}(${source})`;
   return `=SUMIFS(${source}, ${criteria.join(", ")})`;
 }
@@ -368,20 +502,45 @@ function conditionSql(condition: Condition, parameterIndex: number) {
   if (condition.operator === "contains") return `${field} ILIKE ${param}`;
   if (condition.operator === "greater_than") return `${field} > ${param}`;
   if (condition.operator === "less_than") return `${field} < ${param}`;
+  if (condition.operator === "greater_or_equal" || condition.operator === "on_or_after") return `${field} >= ${param}`;
+  if (condition.operator === "less_or_equal" || condition.operator === "on_or_before") return `${field} <= ${param}`;
+  if (condition.operator === "before") return `${field} < ${param}`;
+  if (condition.operator === "after") return `${field} > ${param}`;
+  if (condition.operator === "between") return `${field} BETWEEN ${param} AND ${param}_2`;
   if (condition.operator === "not_equals") return `${field} <> ${param}`;
   if (condition.operator === "is_blank") return `NULLIF(TRIM(${field}), '') IS NULL`;
   return `${field} = ${param}`;
 }
 
 export function toSql(expression: Expression) {
+  const alias = expression.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "") || "calculated_field";
+  if (isSameLevelMathFunction(expression.functionKey)) {
+    const fields = getExpressionSourceFields(expression).map((key) => fieldCatalog.find((field) => field.key === key)?.sql ?? key);
+    const values = fields.map((field) => `COALESCE(${field}, 0)`);
+    let calculation = values.join(" + ");
+    if (expression.functionKey === "AVERAGE") calculation = `(${values.join(" + ")}) / ${Math.max(values.length, 1)}.0`;
+    if (expression.functionKey === "DIFFERENCE") calculation = values.slice(1).reduce((sql, value) => `${sql} - ${value}`, values[0] ?? "0");
+    if (expression.functionKey === "PRODUCT") calculation = values.join(" * ");
+    if (expression.functionKey === "MIN") calculation = `LEAST(${values.join(", ")})`;
+    if (expression.functionKey === "MAX") calculation = `GREATEST(${values.join(", ")})`;
+    if (expression.functionKey === "ROUND") calculation = `ROUND(${values[0] ?? "0"}, 0)`;
+    if (expression.functionKey === "ABS") calculation = `ABS(${values[0] ?? "0"})`;
+    if (expression.functionKey === "PERCENT") calculation = `ROUND((${values[0] ?? "0"} / NULLIF(${values[1] ?? "0"}, 0)) * 100, 2)`;
+    if (expression.level === "invoice") {
+      return `SELECT\n  i.invoice_number,\n  i.customer_number,\n  ${calculation} AS ${alias}\nFROM invoice i;`;
+    }
+    return `SELECT\n  c.customer_number,\n  c.customer_name,\n  ${calculation} AS ${alias}\nFROM customer c;`;
+  }
+
   const source = fieldCatalog.find((field) => field.key === expression.sourceField)?.sql ?? "i.open_amount";
-  const where = expression.conditions.map((condition, index) => conditionSql(condition, index + 1)).join("\n    AND ") || "1 = 1";
+  let parameterIndex = 0;
+  const where = getConditionGroups(expression).map((group) => {
+    const conditions = group.conditions.map((condition) => conditionSql(condition, ++parameterIndex)).join("\n      AND ") || "1 = 1";
+    return `(${conditions})`;
+  }).join("\n    OR ");
   let calculation = `SUM(${source}) FILTER (WHERE ${where})`;
   if (expression.functionKey === "COUNTIFS") calculation = `COUNT(*) FILTER (WHERE ${where})`;
   if (expression.functionKey === "AVERAGEIFS") calculation = `AVG(${source}) FILTER (WHERE ${where})`;
-  if (expression.functionKey === "MIN") calculation = `MIN(${source}) FILTER (WHERE ${where})`;
-  if (expression.functionKey === "MAX") calculation = `MAX(${source}) FILTER (WHERE ${where})`;
-  if (expression.functionKey === "PERCENT") calculation = `ROUND((SUM(${source}) FILTER (WHERE ${where}) / NULLIF(c.credit_limit, 0)) * 100, 2)`;
   if (expression.functionKey === "DAYS") calculation = "MAX(DATE_PART('day', CURRENT_DATE - i.due_date))";
   if (expression.functionKey === "IF") calculation = `CASE WHEN SUM(${source}) FILTER (WHERE ${where}) > c.credit_limit * 0.20 THEN 'Priority' ELSE 'Standard' END`;
   if (expression.functionKey === "ROUND") calculation = `ROUND(SUM(${source}) FILTER (WHERE ${where}), 0)`;
@@ -393,13 +552,17 @@ export function toSql(expression: Expression) {
   if (expression.functionKey === "COALESCE") calculation = "COALESCE(c.collector, 'Unassigned')";
   if (expression.functionKey === "EOMONTH") calculation = "(DATE_TRUNC('month', i.due_date) + INTERVAL '1 month - 1 day')::date";
 
-  const alias = expression.name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   return `SELECT\n  c.customer_number,\n  c.customer_name,\n  ${calculation} AS ${alias}\nFROM customer c\nLEFT JOIN invoice i\n  ON i.customer_number = c.customer_number\nGROUP BY\n  c.customer_number, c.customer_name, c.credit_limit;`;
 }
 
 export function sqlParameters(expression: Expression) {
-  return expression.conditions
-    .map((condition, index) => ({ condition, name: `p${index + 1}` }))
-    .filter(({ condition }) => condition.operator !== "is_blank")
-    .map(({ condition, name }) => ({ name, value: condition.value }));
+  if (isSameLevelMathFunction(expression.functionKey)) return [];
+  return getConditionGroups(expression)
+    .flatMap((group) => group.conditions)
+    .flatMap((condition, index) => {
+      if (condition.operator === "is_blank") return [];
+      const values = [{ name: `p${index + 1}`, value: condition.value }];
+      if (condition.operator === "between") values.push({ name: `p${index + 1}_2`, value: condition.secondValue ?? "" });
+      return values;
+    });
 }

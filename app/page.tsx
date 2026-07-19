@@ -10,6 +10,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CircleCheck,
   CircleHelp,
   Columns3,
   Database,
@@ -41,6 +42,7 @@ import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import {
   type Condition,
+  type ConditionGroup,
   type Customer,
   type Expression,
   type FunctionKey,
@@ -52,9 +54,13 @@ import {
   fieldCatalog,
   formatResult,
   functionCatalog,
-  getFieldValue,
+  getConditionGroups,
+  getExpressionSourceFields,
   inferResultType,
   initialExpression,
+  isConditionalFunction,
+  isSameLevelMathFunction,
+  matchesExpressionConditions,
   money,
   referenceHeaders,
   seedCustomers,
@@ -93,9 +99,43 @@ const operatorLabels: Record<Operator, string> = {
   not_in: "is none of",
   greater_than: "is greater than",
   less_than: "is less than",
+  greater_or_equal: "is at least",
+  less_or_equal: "is at most",
+  between: "is between",
+  before: "is before",
+  after: "is after",
+  on_or_before: "is on or before",
+  on_or_after: "is on or after",
   contains: "contains",
   is_blank: "is blank",
 };
+
+const operatorsByKind: Record<"amount" | "number" | "text" | "date", Operator[]> = {
+  text: ["equals", "not_equals", "in", "not_in", "contains", "is_blank"],
+  amount: ["equals", "not_equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "between", "is_blank"],
+  number: ["equals", "not_equals", "greater_than", "less_than", "greater_or_equal", "less_or_equal", "between", "is_blank"],
+  date: ["equals", "not_equals", "before", "after", "on_or_before", "on_or_after", "between", "is_blank"],
+};
+
+function operatorLabel(fieldKey: string, operator: Operator) {
+  const kind = fieldCatalog.find((field) => field.key === fieldKey)?.kind;
+  if (kind === "date" && operator === "equals") return "is on";
+  if (kind === "date" && operator === "not_equals") return "is not on";
+  return operatorLabels[operator];
+}
+
+function sourceSelection(functionKey: FunctionKey, level: Level, current: string[] = []) {
+  const candidates = sourceFieldsForFunction(functionKey, level);
+  const compatible = current.filter((key) => candidates.some((field) => field.key === key));
+  if (!isSameLevelMathFunction(functionKey)) return compatible.length ? compatible.slice(0, 1) : candidates.slice(0, 1).map((field) => field.key);
+  const minimum = ["ROUND", "ABS"].includes(functionKey) ? 1 : 2;
+  const selected = [...compatible];
+  for (const candidate of candidates) {
+    if (selected.length >= minimum) break;
+    if (!selected.includes(candidate.key)) selected.push(candidate.key);
+  }
+  return selected.slice(0, 5);
+}
 
 const viewLabels: Record<View, string> = {
   expressions: "Expression Studio",
@@ -113,7 +153,7 @@ const viewIcons: Record<View, ReactNode> = {
   invoices: <FileSpreadsheet size={18} />,
 };
 
-const conditionFields = fieldCatalog.filter((field) => field.entity === "Invoice" || field.key.startsWith("customer."));
+const conditionFields = fieldCatalog.filter((field) => field.entity === "Invoice");
 
 const resultTypeLabels = { amount: "Amount", number: "Number", text: "Text", date: "Date" } as const;
 
@@ -161,14 +201,16 @@ function IconButton({
   children,
   onClick,
   className = "",
+  disabled = false,
 }: {
   label: string;
   children: ReactNode;
   onClick?: () => void;
   className?: string;
+  disabled?: boolean;
 }) {
   return (
-    <button className={`icon-button ${className}`} onClick={onClick} aria-label={label} title={label}>
+    <button className={`icon-button ${className}`} onClick={onClick} aria-label={label} title={label} disabled={disabled}>
       {children}
     </button>
   );
@@ -252,10 +294,12 @@ function DataGrid<T>({
 
 function FunctionLibrary({
   selected,
+  level,
   onSelect,
   onClose,
 }: {
   selected: FunctionKey;
+  level: Level;
   onSelect: (key: FunctionKey) => void;
   onClose: () => void;
 }) {
@@ -286,21 +330,27 @@ function FunctionLibrary({
               <section key={category} className="function-group">
                 <h3>{category}</h3>
                 <div className="function-list">
-                  {items.map((item) => (
-                    <button
-                      key={item.key}
-                      className={selected === item.key ? "function-option selected" : "function-option"}
-                      onClick={() => { onSelect(item.key); onClose(); }}
-                    >
-                      <span className="function-mark">{item.key.slice(0, 3)}</span>
-                      <span>
-                        <strong>{item.key}</strong>
-                        <small>{item.label}</small>
-                        <p>{item.description}</p>
-                      </span>
-                      {selected === item.key ? <Check size={18} /> : <ChevronRight size={18} />}
-                    </button>
-                  ))}
+                  {items.map((item) => {
+                    const unavailable = item.category === "Conditional" && level === "invoice";
+                    const ready = item.category === "Conditional" || item.category === "Math";
+                    return (
+                      <button
+                        key={item.key}
+                        className={`function-option ${selected === item.key ? "selected" : ""} ${unavailable ? "unavailable" : ""}`}
+                        onClick={() => { onSelect(item.key); onClose(); }}
+                        disabled={unavailable}
+                        title={unavailable ? "Conditional aggregation needs a child data level. Choose Customer to aggregate Invoice rows." : undefined}
+                      >
+                        <span className="function-mark">{item.key.slice(0, 3)}</span>
+                        <span>
+                          <strong>{item.key}</strong>
+                          <small>{item.label}</small>
+                          <p>{unavailable ? "Available when calculating for each Customer." : item.description}</p>
+                        </span>
+                        {ready ? <CircleCheck className="function-ready" size={18} /> : selected === item.key ? <Check size={18} /> : <ChevronRight size={18} />}
+                      </button>
+                    );
+                  })}
                 </div>
               </section>
             );
@@ -599,26 +649,36 @@ function ExpressionBuilder({
   const [mode, setMode] = useState<FormulaMode>("visual");
   const [sqlOpen, setSqlOpen] = useState(true);
   const [formulaText, setFormulaText] = useState(toExcelFormula(expression));
-  const simulation = customers.slice(0, 4).map((customer) => ({
+  const conditionGroups = getConditionGroups(expression);
+  const customerSimulation = customers.slice(0, 4).map((customer) => ({
     customer,
-    matched: invoices.filter((invoice) => invoice.customerNumber === customer.customerNumber && expression.conditions.every((condition) => {
-      const value = String(getFieldValue(condition.field, customer, invoice)).toLowerCase();
-      if (condition.operator === "in") return condition.value.toLowerCase().split(",").map((item) => item.trim()).includes(value);
-      if (condition.operator === "equals") return value === condition.value.toLowerCase();
-      return true;
-    })).length,
+    matched: invoices.filter((invoice) => invoice.customerNumber === customer.customerNumber && matchesExpressionConditions(expression, customer, invoice)).length,
     result: evaluateExpression(expression, customer, invoices),
   }));
+  const invoiceSimulation = invoices.slice(0, 4).map((invoice) => {
+    const customer = customers.find((item) => item.customerNumber === invoice.customerNumber) ?? customers[0];
+    return { invoice, customer, result: evaluateExpression(expression, customer, invoices, invoice) };
+  });
   const selectedFunction = functionCatalog.find((item) => item.key === expression.functionKey)!;
-  const availableSourceFields = sourceFieldsForFunction(expression.functionKey);
+  const availableSourceFields = sourceFieldsForFunction(expression.functionKey, expression.level);
   const resultType = inferResultType(expression);
-  const sourceField = fieldCatalog.find((field) => field.key === expression.sourceField);
+  const sourceFieldKeys = getExpressionSourceFields(expression);
+  const sourceField = fieldCatalog.find((field) => field.key === sourceFieldKeys[0]);
+  const conditionalFunction = isConditionalFunction(expression.functionKey);
+  const sameLevelMath = isSameLevelMathFunction(expression.functionKey);
+  const incompatible = conditionalFunction && expression.level === "invoice";
+  const addableMath = ["SUM", "AVERAGE", "PRODUCT", "MIN", "MAX"].includes(expression.functionKey);
+  const minimumOperands = ["ROUND", "ABS"].includes(expression.functionKey) ? 1 : 2;
   const calculationPhrases: Record<FunctionKey, string> = {
     SUMIFS: "sum the values in",
     COUNTIFS: "count matching records",
     AVERAGEIFS: "average the values in",
-    MIN: "find the minimum in",
-    MAX: "find the maximum in",
+    SUM: "add fields",
+    AVERAGE: "average fields",
+    DIFFERENCE: "subtract fields",
+    PRODUCT: "multiply fields",
+    MIN: "find the smallest field value",
+    MAX: "find the largest field value",
     IF: "classify using",
     ROUND: "round",
     ABS: "find the absolute value of",
@@ -632,16 +692,28 @@ function ExpressionBuilder({
     PERCENT: "calculate the percentage from",
   };
 
-  function updateCondition(id: string, patch: Partial<Condition>) {
-    setExpression((current) => ({ ...current, conditions: current.conditions.map((condition) => condition.id === id ? { ...condition, ...patch } : condition) }));
+  function setConditionGroups(groups: ConditionGroup[]) {
+    setExpression((current) => ({ ...current, conditionGroups: groups, conditions: groups.flatMap((group) => group.conditions) }));
   }
 
-  function applyRecipe(recipe: "sum" | "age" | "priority" | "percent") {
+  function updateCondition(groupId: string, id: string, patch: Partial<Condition>) {
+    setConditionGroups(conditionGroups.map((group) => group.id === groupId
+      ? { ...group, conditions: group.conditions.map((condition) => condition.id === id ? { ...condition, ...patch } : condition) }
+      : group));
+  }
+
+  function setOperand(index: number, key: string) {
+    const next = [...sourceFieldKeys];
+    next[index] = key;
+    setExpression((current) => ({ ...current, sourceField: next[0], sourceFields: next }));
+  }
+
+  function applyRecipe(recipe: "sum" | "age" | "priority" | "difference") {
     const patches: Record<typeof recipe, Partial<Expression>> = {
-      sum: { name: "Selected document type open amount", functionKey: "SUMIFS", sourceField: "invoice.openAmount", conditions: initialExpression.conditions },
-      age: { name: "Oldest invoice age", functionKey: "DAYS", sourceField: "invoice.dueDate", conditions: [{ id: "condition-age", field: "invoice.status", operator: "equals", value: "Open" }] },
-      priority: { name: "Collection priority", functionKey: "IF", sourceField: "invoice.openAmount", conditions: [{ id: "condition-priority", field: "invoice.status", operator: "equals", value: "Open" }] },
-      percent: { name: "Credit utilization", functionKey: "PERCENT", sourceField: "invoice.openAmount", conditions: [{ id: "condition-percent", field: "invoice.status", operator: "equals", value: "Open" }] },
+      sum: { name: "Selected document type open amount", level: "customer", functionKey: "SUMIFS", sourceField: "invoice.openAmount", sourceFields: ["invoice.openAmount"], conditions: initialExpression.conditions, conditionGroups: initialExpression.conditionGroups },
+      age: { name: "Oldest invoice age", level: "customer", functionKey: "DAYS", sourceField: "invoice.dueDate", sourceFields: ["invoice.dueDate"], conditions: [{ id: "condition-age", field: "invoice.status", operator: "equals", value: "Open" }], conditionGroups: [{ id: "group-age", conditions: [{ id: "condition-age", field: "invoice.status", operator: "equals", value: "Open" }] }] },
+      priority: { name: "Collection priority", level: "customer", functionKey: "IF", sourceField: "invoice.openAmount", sourceFields: ["invoice.openAmount"], conditions: [{ id: "condition-priority", field: "invoice.status", operator: "equals", value: "Open" }], conditionGroups: [{ id: "group-priority", conditions: [{ id: "condition-priority", field: "invoice.status", operator: "equals", value: "Open" }] }] },
+      difference: { name: "Applied invoice amount", level: "invoice", functionKey: "DIFFERENCE", sourceField: "invoice.invoiceAmount", sourceFields: ["invoice.invoiceAmount", "invoice.openAmount"], conditions: [], conditionGroups: [] },
     };
     setExpression((current) => ({ ...current, ...patches[recipe] }));
     onToast("Recipe loaded. The preview has been recalculated.");
@@ -659,8 +731,8 @@ function ExpressionBuilder({
         <div className="page-actions">
           <button className="text-button" onClick={onShowGuide}><CircleHelp size={17} /> How to</button>
           <button className="secondary-button" onClick={onSaveDraft}><Save size={16} /> Save draft</button>
-          <button className="primary-button" onClick={onOpenSimulation}><FlaskConical size={16} /> Test on data</button>
-          <button className="publish-button" onClick={onPublish}><ShieldCheck size={16} /> Save & publish</button>
+          <button className="primary-button" onClick={onOpenSimulation} disabled={incompatible}><FlaskConical size={16} /> Test on data</button>
+          <button className="publish-button" onClick={onPublish} disabled={incompatible}><ShieldCheck size={16} /> Save & publish</button>
         </div>
       </header>
 
@@ -672,7 +744,7 @@ function ExpressionBuilder({
                 <button className={mode === "visual" ? "active" : ""} onClick={() => setMode("visual")}><LayoutGrid size={15} /> Visual</button>
                 <button className={mode === "formula" ? "active" : ""} onClick={() => { setFormulaText(toExcelFormula(expression)); setMode("formula"); }}><Braces size={15} /> Formula</button>
               </div>
-              <span className="validation-state"><ShieldCheck size={16} /> Valid expression</span>
+              <span className={incompatible ? "validation-state needs-attention" : "validation-state"}>{incompatible ? <Info size={16} /> : <ShieldCheck size={16} />} {incompatible ? "Needs attention" : "Valid expression"}</span>
             </div>
 
             {mode === "visual" ? (
@@ -683,7 +755,11 @@ function ExpressionBuilder({
                     <div className="section-label"><span>Field details</span><small>Name the value and choose where it belongs.</small></div>
                     <div className="output-row">
                       <label className="field-control grow"><span>Field name</span><input value={expression.name} onChange={(event) => setExpression((current) => ({ ...current, name: event.target.value }))} /></label>
-                      <label className="field-control compact"><span>Calculate for each</span><select value={expression.level} onChange={(event) => setExpression((current) => ({ ...current, level: event.target.value as Level }))}><option value="customer">Customer</option><option value="invoice">Invoice</option></select></label>
+                      <label className="field-control compact"><span>Calculate for each</span><select value={expression.level} onChange={(event) => setExpression((current) => {
+                        const level = event.target.value as Level;
+                        const sources = sourceSelection(current.functionKey, level, getExpressionSourceFields(current));
+                        return { ...current, level, sourceField: sources[0] ?? "", sourceFields: sources };
+                      })}><option value="customer">Customer</option><option value="invoice">Invoice</option></select></label>
                     </div>
                     <label className="field-control description-control"><span>Description</span><input value={expression.description} onChange={(event) => setExpression((current) => ({ ...current, description: event.target.value }))} placeholder="What business question does this field answer?" /></label>
                   </div>
@@ -699,19 +775,39 @@ function ExpressionBuilder({
                       <span className="sentence-word">use</span>
                       <button className="sentence-token function-token" onClick={onShowFunctions}><FunctionSquare size={16} /><span>{selectedFunction.label}<small>{expression.functionKey}</small></span><ChevronDown size={15} /></button>
                       <span className="sentence-word">to {calculationPhrases[expression.functionKey]}</span>
-                      {availableSourceFields.length > 0 && (
-                        <>
-                          <label className="inline-select field-token">
-                            <Database size={15} />
-                            <select aria-label="Value to calculate" value={expression.sourceField} onChange={(event) => setExpression((current) => ({ ...current, sourceField: event.target.value }))}>
-                              {availableSourceFields.map((field) => <option key={field.key} value={field.key}>{field.entity} · {field.label}</option>)}
-                            </select>
-                          </label>
-                        </>
+                      {!sameLevelMath && availableSourceFields.length > 0 && (
+                        <label className="inline-select field-token">
+                          <Database size={15} />
+                          <select aria-label="Value to calculate" value={expression.sourceField} onChange={(event) => setExpression((current) => ({ ...current, sourceField: event.target.value, sourceFields: [event.target.value] }))}>
+                            {availableSourceFields.map((field) => <option key={field.key} value={field.key}>{field.entity} · {field.label}</option>)}
+                          </select>
+                        </label>
                       )}
                     </div>
-                    {availableSourceFields.length > 0 ? (
-                      <div className="measure-explainer"><Database size={16} /><span><strong>Value to calculate: {sourceField?.entity} · {sourceField?.label}</strong>The function operates on this field. Conditions below only decide which records qualify.</span></div>
+                    {incompatible ? (
+                      <div className="grain-warning"><Info size={18} /><span><strong>Conditional aggregation needs a lower data level</strong>This demo has Invoice rows below Customer. Choose <b>Customer</b> above to sum, count, or average its invoices.</span></div>
+                    ) : sameLevelMath ? (
+                      <div className="operand-editor">
+                        <header><span><strong>Fields to combine</strong><small>Only {expression.level === "customer" ? "Customer" : "Invoice"} fields can be combined here.</small></span>{addableMath && sourceFieldKeys.length < 5 && <button className="add-condition" onClick={() => {
+                          const next = availableSourceFields.find((field) => !sourceFieldKeys.includes(field.key));
+                          if (next) setExpression((current) => ({ ...current, sourceFields: [...sourceFieldKeys, next.key] }));
+                        }}><Plus size={14} /> Add field</button>}</header>
+                        <div className="operand-list">
+                          {sourceFieldKeys.map((key, index) => (
+                            <div className="operand-row" key={`${key}-${index}`}>
+                              <span>{expression.functionKey === "DIFFERENCE" ? (index === 0 ? "Start with" : "Subtract") : expression.functionKey === "PERCENT" ? (index === 0 ? "Part" : "Total") : `Value ${index + 1}`}</span>
+                              <label className="inline-select field-token"><Database size={15} /><select aria-label={`Value ${index + 1}`} value={key} onChange={(event) => setOperand(index, event.target.value)}>{availableSourceFields.map((field) => <option key={field.key} value={field.key}>{field.entity} · {field.label}</option>)}</select></label>
+                              {sourceFieldKeys.length > minimumOperands && <IconButton label={`Remove value ${index + 1}`} onClick={() => {
+                                const next = sourceFieldKeys.filter((_, sourceIndex) => sourceIndex !== index);
+                                setExpression((current) => ({ ...current, sourceField: next[0], sourceFields: next }));
+                              }}><X size={15} /></IconButton>}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="grain-note"><CircleCheck size={15} /><span>Same-level calculation: one result is computed from fields on each {expression.level} row.</span></div>
+                      </div>
+                    ) : availableSourceFields.length > 0 ? (
+                      <div className="measure-explainer"><Database size={16} /><span><strong>Child value: {sourceField?.entity} · {sourceField?.label}</strong>{conditionalFunction ? "This field is read from Invoice rows one level below Customer. Conditions decide which invoices qualify." : "The function operates on this field."}</span></div>
                     ) : (
                       <div className="measure-explainer"><Info size={16} /><span><strong>No value field needed</strong>{expression.functionKey} counts the records that match your conditions.</span></div>
                     )}
@@ -719,31 +815,47 @@ function ExpressionBuilder({
                   </div>
                 </div>
 
-                <div className="builder-section condition-section">
-                  <div className="step-number">3</div>
-                  <div className="builder-section-body">
-                    <div className="section-label condition-heading">
-                      <div><span>Include records where</span><small>Every condition below must be true.</small></div>
-                      <button className="add-condition" onClick={() => setExpression((current) => ({ ...current, conditions: [...current.conditions, { id: `condition-${Date.now()}`, field: "invoice.documentType", operator: "equals", value: "" }] }))}><Plus size={15} /> Add condition</button>
-                    </div>
-                    <div className="condition-list">
-                      {expression.conditions.map((condition, index) => (
-                        <div className="condition-row" key={condition.id}>
-                          <span className="logic-join">{index === 0 ? "WHERE" : "AND"}</span>
-                          <label className="inline-select condition-field">
-                            <select value={condition.field} onChange={(event) => updateCondition(condition.id, { field: event.target.value })}>
-                              <optgroup label="Invoice fields">{conditionFields.filter((field) => field.entity === "Invoice").map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}</optgroup>
-                              <optgroup label="Customer fields">{conditionFields.filter((field) => field.entity === "Customer").map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}</optgroup>
-                            </select>
-                          </label>
-                          <label className="inline-select operator-select"><select value={condition.operator} onChange={(event) => updateCondition(condition.id, { operator: event.target.value as Operator })}>{Object.entries(operatorLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-                          {condition.operator !== "is_blank" && <input className="condition-value" value={condition.value} placeholder={condition.operator === "in" ? "RV, DZ" : "Enter value"} onChange={(event) => updateCondition(condition.id, { value: event.target.value })} />}
-                          <IconButton label="Remove condition" onClick={() => setExpression((current) => ({ ...current, conditions: current.conditions.filter((item) => item.id !== condition.id) }))}><X size={16} /></IconButton>
-                        </div>
-                      ))}
+                {conditionalFunction && !incompatible && (
+                  <div className="builder-section condition-section">
+                    <div className="step-number">3</div>
+                    <div className="builder-section-body">
+                      <div className="section-label condition-heading">
+                        <div><span>Include invoice records where</span><small>Every rule inside a group uses AND. Any OR group can match.</small></div>
+                      </div>
+                      <div className="condition-groups">
+                        {conditionGroups.map((group, groupIndex) => (
+                          <div key={group.id}>
+                            {groupIndex > 0 && <div className="or-divider"><span>OR</span></div>}
+                            <section className="condition-group">
+                              <header><span><strong>Group {groupIndex + 1}</strong><small>All rules in this group must match</small></span>{conditionGroups.length > 1 && <IconButton label={`Remove group ${groupIndex + 1}`} onClick={() => setConditionGroups(conditionGroups.filter((item) => item.id !== group.id))}><X size={15} /></IconButton>}</header>
+                              <div className="condition-list">
+                                {group.conditions.map((condition, index) => {
+                                  const field = fieldCatalog.find((item) => item.key === condition.field) ?? conditionFields[0];
+                                  const operators = operatorsByKind[field.kind];
+                                  const inputType = field.kind === "date" ? "date" : field.kind === "amount" || field.kind === "number" ? "number" : "text";
+                                  return (
+                                    <div className={`condition-row ${condition.operator === "between" ? "has-range" : ""}`} key={condition.id}>
+                                      <span className="logic-join">{index === 0 ? "WHERE" : "AND"}</span>
+                                      <label className="inline-select condition-field"><select value={condition.field} onChange={(event) => {
+                                        const nextField = fieldCatalog.find((item) => item.key === event.target.value) ?? conditionFields[0];
+                                        updateCondition(group.id, condition.id, { field: event.target.value, operator: operatorsByKind[nextField.kind][0], value: "", secondValue: "" });
+                                      }}>{conditionFields.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+                                      <label className="inline-select operator-select"><select value={condition.operator} onChange={(event) => updateCondition(group.id, condition.id, { operator: event.target.value as Operator, secondValue: "" })}>{operators.map((operator) => <option key={operator} value={operator}>{operatorLabel(condition.field, operator)}</option>)}</select></label>
+                                      {condition.operator !== "is_blank" && <div className="condition-inputs"><input type={inputType} className="condition-value" value={condition.value} placeholder={condition.operator === "in" || condition.operator === "not_in" ? "RV, DZ" : "Enter value"} onChange={(event) => updateCondition(group.id, condition.id, { value: event.target.value })} />{condition.operator === "between" && <><span>and</span><input type={inputType} className="condition-value" value={condition.secondValue ?? ""} aria-label="End value" onChange={(event) => updateCondition(group.id, condition.id, { secondValue: event.target.value })} /></>}</div>}
+                                      <IconButton label="Remove condition" disabled={group.conditions.length === 1} onClick={() => setConditionGroups(conditionGroups.map((item) => item.id === group.id ? { ...item, conditions: item.conditions.filter((rule) => rule.id !== condition.id) } : item))}><X size={16} /></IconButton>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <button className="add-condition" onClick={() => setConditionGroups(conditionGroups.map((item) => item.id === group.id ? { ...item, conditions: [...item.conditions, { id: `condition-${Date.now()}`, field: "invoice.documentType", operator: "equals", value: "" }] } : item))}><Plus size={14} /> Add AND condition</button>
+                            </section>
+                          </div>
+                        ))}
+                        <button className="add-or-group" onClick={() => setConditionGroups([...conditionGroups, { id: `group-${Date.now()}`, conditions: [{ id: `condition-${Date.now()}`, field: "invoice.documentType", operator: "equals", value: "" }] }])}><Plus size={15} /> Add OR group</button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             ) : (
               <div className="formula-editor">
@@ -783,25 +895,26 @@ function ExpressionBuilder({
               <button onClick={() => applyRecipe("sum")}><span className="recipe-icon coral"><Calculator size={18} /></span><strong>Conditional open amount</strong><small>SUMIFS by doc type and status</small></button>
               <button onClick={() => applyRecipe("age")}><span className="recipe-icon blue"><BarChart3 size={18} /></span><strong>Oldest invoice age</strong><small>DAYS from due date to today</small></button>
               <button onClick={() => applyRecipe("priority")}><span className="recipe-icon amber"><Sparkles size={18} /></span><strong>Collection priority</strong><small>IF exposure crosses threshold</small></button>
-              <button onClick={() => applyRecipe("percent")}><span className="recipe-icon green"><BarChart3 size={18} /></span><strong>Credit utilization</strong><small>Open amount as % of credit limit</small></button>
+              <button onClick={() => applyRecipe("difference")}><span className="recipe-icon green"><Calculator size={18} /></span><strong>Applied invoice amount</strong><small>Invoice amount minus open amount</small></button>
             </div>
           </section>
         </div>
 
         <aside className="live-preview">
-          <header><div><span className="eyebrow">Live sample</span><h2>Calculated results</h2></div><span className="sample-badge">4 customers</span></header>
+          <header><div><span className="eyebrow">Live sample</span><h2>Calculated results</h2></div><span className="sample-badge">4 {expression.level === "customer" ? "customers" : "invoices"}</span></header>
           <div className="preview-summary"><span>Output field</span><strong>{expression.name || "Untitled field"}</strong><small>{expression.level === "customer" ? "Customer-level" : "Invoice-level"} · {resultTypeLabels[resultType]} · auto-detected</small></div>
           <div className="preview-results">
-            {simulation.map(({ customer, matched, result }, index) => (
-              <div className="preview-result" key={customer.customerNumber} style={{ animationDelay: `${index * 45}ms` }}>
-                <span className="customer-avatar">{customer.customerName.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span>
-                <span><strong>{customer.customerName}</strong><small>{matched} matching invoice{matched === 1 ? "" : "s"}</small></span>
-                <b>{formatResult(result, resultType)}</b>
-              </div>
+            {expression.level === "customer" ? customerSimulation.map(({ customer, matched, result }, index) => (
+              <div className="preview-result" key={customer.customerNumber} style={{ animationDelay: `${index * 45}ms` }}><span className="customer-avatar">{customer.customerName.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><span><strong>{customer.customerName}</strong><small>{conditionalFunction ? `${matched} matching invoice${matched === 1 ? "" : "s"}` : customer.customerNumber}</small></span><b>{formatResult(result, resultType)}</b></div>
+            )) : invoiceSimulation.map(({ invoice, result }, index) => (
+              <div className="preview-result" key={invoice.invoiceNumber} style={{ animationDelay: `${index * 45}ms` }}><span className="customer-avatar">{invoice.documentType}</span><span><strong>{invoice.invoiceNumber}</strong><small>{invoice.customerName}</small></span><b>{formatResult(result, resultType)}</b></div>
             ))}
           </div>
-          <div className="match-insight"><Filter size={17} /><span><strong>{invoices.filter((invoice) => ["RV", "DZ"].includes(invoice.documentType) && invoice.status === "Open").length} of {invoices.length}</strong> invoices match the current filter.</span></div>
-          <button className="full-width-button" onClick={onOpenSimulation}>Open simulation lab <ArrowRight size={16} /></button>
+          {conditionalFunction && !incompatible && <div className="match-insight"><Filter size={17} /><span><strong>{invoices.filter((invoice) => {
+            const customer = customers.find((item) => item.customerNumber === invoice.customerNumber) ?? customers[0];
+            return matchesExpressionConditions(expression, customer, invoice);
+          }).length} of {invoices.length}</strong> invoices match the current filter.</span></div>}
+          <button className="full-width-button" onClick={onOpenSimulation} disabled={incompatible}>Open simulation lab <ArrowRight size={16} /></button>
         </aside>
       </div>
     </section>
@@ -811,12 +924,16 @@ function ExpressionBuilder({
 function SimulationLab({ expression, customers, invoices, onOpenCustomer, onPublish }: { expression: Expression; customers: Customer[]; invoices: Invoice[]; onOpenCustomer: (customer: Customer) => void; onPublish: () => void }) {
   const [selected, setSelected] = useState(customers.slice(0, 3).map((customer) => customer.customerNumber));
   const results = customers.filter((customer) => selected.includes(customer.customerNumber)).map((customer) => ({ customer, result: evaluateExpression(expression, customer, invoices), invoices: invoices.filter((invoice) => invoice.customerNumber === customer.customerNumber) }));
+  const invoiceResults = invoices.filter((invoice) => selected.includes(invoice.customerNumber)).map((invoice) => {
+    const customer = customers.find((item) => item.customerNumber === invoice.customerNumber) ?? customers[0];
+    return { invoice, customer, result: evaluateExpression(expression, customer, invoices, invoice) };
+  });
   return (
     <section className="standard-page page-enter">
       <header className="page-title-row"><div><div className="title-kicker"><FlaskConical size={14} /> Safe sample run</div><h1>Simulation Lab</h1><p>Validate the expression on a focused customer set before publishing it.</p></div><button className="primary-button" onClick={onPublish}><ShieldCheck size={16} /> Approve & publish</button></header>
       <div className="simulation-layout">
         <section className="simulation-picker surface-panel"><header><div><span className="eyebrow">Step 1</span><h2>Select customers</h2></div><span>{selected.length} selected</span></header><label className="search-field"><Search size={16} /><input placeholder="Find a customer" /></label><div className="customer-check-list">{customers.map((customer) => <label key={customer.customerNumber} className={selected.includes(customer.customerNumber) ? "checked" : ""}><input type="checkbox" checked={selected.includes(customer.customerNumber)} onChange={() => setSelected((current) => current.includes(customer.customerNumber) ? current.filter((item) => item !== customer.customerNumber) : [...current, customer.customerNumber])} /><span className="customer-avatar">{customer.customerName.slice(0, 2).toUpperCase()}</span><span><strong>{customer.customerName}</strong><small>{customer.customerNumber} · {customer.region}</small></span><Check size={16} /></label>)}</div></section>
-        <section className="simulation-results surface-panel"><header><div><span className="eyebrow">Step 2</span><h2>Review results</h2></div><span className="validation-state"><Check size={15} /> Run complete</span></header><div className="sim-formula"><span>fx</span><code>{toExcelFormula(expression)}</code></div><div className="sim-result-list">{results.map(({ customer, result, invoices: customerInvoices }) => <button key={customer.customerNumber} onDoubleClick={() => onOpenCustomer(customer)} onClick={() => onOpenCustomer(customer)}><span><strong>{customer.customerName}</strong><small>{customerInvoices.length} total invoices · {customer.risk} risk</small></span><span className="sim-value"><strong>{formatResult(result, inferResultType(expression))}</strong><small>{expression.name}</small></span><ChevronRight size={17} /></button>)}</div></section>
+        <section className="simulation-results surface-panel"><header><div><span className="eyebrow">Step 2</span><h2>Review {expression.level === "customer" ? "customer" : "invoice"} results</h2></div><span className="validation-state"><Check size={15} /> Run complete</span></header><div className="sim-formula"><span>fx</span><code>{toExcelFormula(expression)}</code></div><div className="sim-result-list">{expression.level === "customer" ? results.map(({ customer, result, invoices: customerInvoices }) => <button key={customer.customerNumber} onDoubleClick={() => onOpenCustomer(customer)} onClick={() => onOpenCustomer(customer)}><span><strong>{customer.customerName}</strong><small>{customerInvoices.length} total invoices · {customer.risk} risk</small></span><span className="sim-value"><strong>{formatResult(result, inferResultType(expression))}</strong><small>{expression.name}</small></span><ChevronRight size={17} /></button>) : invoiceResults.map(({ invoice, customer, result }) => <button key={invoice.invoiceNumber} onDoubleClick={() => onOpenCustomer(customer)} onClick={() => onOpenCustomer(customer)}><span><strong>{invoice.invoiceNumber}</strong><small>{invoice.customerName} · {invoice.documentType}</small></span><span className="sim-value"><strong>{formatResult(result, inferResultType(expression))}</strong><small>{expression.name}</small></span><ChevronRight size={17} /></button>)}</div></section>
       </div>
     </section>
   );
@@ -827,11 +944,12 @@ function CustomerGrid({ customers, invoices, expression, onOpenCustomer, onUploa
   const [showReferences, setShowReferences] = useState(false);
   const [selected, setSelected] = useState(customers[0]?.customerNumber);
   const filtered = customers.filter((customer) => `${customer.customerNumber} ${customer.customerName} ${customer.collector} ${customer.region}`.toLowerCase().includes(query.toLowerCase()));
+  const calculatedColumn: GridColumn<Customer> = { key: "calculated", label: expression.name, width: 210, align: "right", value: (row) => String(evaluateExpression(expression, row, invoices)), render: (row) => <span className="calculated-cell">{formatResult(evaluateExpression(expression, row, invoices), inferResultType(expression))}<span>fx</span></span> };
   const baseColumns: GridColumn<Customer>[] = [
     { key: "customerNumber", label: "Customer #", width: 130, value: (row) => row.customerNumber, render: (row) => <strong className="grid-primary">{row.customerNumber}</strong> },
     { key: "customerName", label: "Customer name", width: 240, value: (row) => row.customerName, render: (row) => <span className="name-cell"><span className="tiny-avatar">{row.customerName.slice(0, 2).toUpperCase()}</span><strong>{row.customerName}</strong></span> },
     { key: "open", label: "Total open", width: 140, align: "right", value: (row) => invoices.filter((invoice) => invoice.customerNumber === row.customerNumber).reduce((sum, invoice) => sum + invoice.openAmount, 0), render: (row) => <strong>{money.format(invoices.filter((invoice) => invoice.customerNumber === row.customerNumber).reduce((sum, invoice) => sum + invoice.openAmount, 0))}</strong> },
-    { key: "calculated", label: expression.name, width: 210, align: "right", value: (row) => String(evaluateExpression(expression, row, invoices)), render: (row) => <span className="calculated-cell">{formatResult(evaluateExpression(expression, row, invoices), inferResultType(expression))}<span>fx</span></span> },
+    ...(expression.level === "customer" ? [calculatedColumn] : []),
     { key: "risk", label: "Risk", width: 100, value: (row) => row.risk, render: (row) => <StatusPill value={row.risk} /> },
     { key: "collector", label: "Collector", width: 155, value: (row) => row.collector },
     { key: "region", label: "Region", width: 110, value: (row) => row.region },
@@ -844,7 +962,7 @@ function CustomerGrid({ customers, invoices, expression, onOpenCustomer, onUploa
   );
 }
 
-function InvoiceGrid({ invoices, onOpenCustomer, onUpload }: { invoices: Invoice[]; onOpenCustomer: (customerNumber: string) => void; onUpload: () => void }) {
+function InvoiceGrid({ invoices, customers, expression, onOpenCustomer, onUpload }: { invoices: Invoice[]; customers: Customer[]; expression: Expression; onOpenCustomer: (customerNumber: string) => void; onUpload: () => void }) {
   const [query, setQuery] = useState("");
   const [showReferences, setShowReferences] = useState(false);
   const [selected, setSelected] = useState(invoices[0]?.invoiceNumber);
@@ -855,6 +973,13 @@ function InvoiceGrid({ invoices, onOpenCustomer, onUpload }: { invoices: Invoice
     { key: "documentType", label: "Doc type", width: 105, value: (row) => row.documentType },
     { key: "openAmount", label: "Open amount", width: 145, align: "right", value: (row) => row.openAmount, render: (row) => <strong>{money.format(row.openAmount)}</strong> },
     { key: "invoiceAmount", label: "Invoice amount", width: 145, align: "right", value: (row) => row.invoiceAmount, render: (row) => money.format(row.invoiceAmount) },
+    ...(expression.level === "invoice" ? [{ key: "calculated", label: expression.name, width: 190, align: "right" as const, value: (row: Invoice) => {
+      const customer = customers.find((item) => item.customerNumber === row.customerNumber) ?? customers[0];
+      return String(evaluateExpression(expression, customer, invoices, row));
+    }, render: (row: Invoice) => {
+      const customer = customers.find((item) => item.customerNumber === row.customerNumber) ?? customers[0];
+      return <span className="calculated-cell">{formatResult(evaluateExpression(expression, customer, invoices, row), inferResultType(expression))}<span>fx</span></span>;
+    } }] : []),
     { key: "dueDate", label: "Due date", width: 130, value: (row) => row.dueDate },
     { key: "status", label: "Status", width: 115, value: (row) => row.status, render: (row) => <StatusPill value={row.status} /> },
     { key: "collector", label: "Collector", width: 155, value: (row) => row.collector },
@@ -873,13 +998,14 @@ function CustomerDetail({ customer, invoices, expression, onBack }: { customer: 
     { key: "invoiceNumber", label: "Invoice #", width: 150, value: (row) => row.invoiceNumber, render: (row) => <strong className="grid-primary">{row.invoiceNumber}</strong> },
     { key: "documentType", label: "Doc type", width: 110, value: (row) => row.documentType },
     { key: "openAmount", label: "Open amount", width: 150, align: "right", value: (row) => row.openAmount, render: (row) => <strong>{money.format(row.openAmount)}</strong> },
+    ...(expression.level === "invoice" ? [{ key: "calculated", label: expression.name, width: 180, align: "right" as const, value: (row: Invoice) => String(evaluateExpression(expression, customer, invoices, row)), render: (row: Invoice) => <span className="calculated-cell">{formatResult(evaluateExpression(expression, customer, invoices, row), inferResultType(expression))}<span>fx</span></span> }] : []),
     { key: "dueDate", label: "Due date", width: 140, value: (row) => row.dueDate },
     { key: "status", label: "Status", width: 120, value: (row) => row.status, render: (row) => <StatusPill value={row.status} /> },
     { key: "invoiceDate", label: "Invoice date", width: 140, value: (row) => row.invoiceDate },
     { key: "collector", label: "Collector", width: 170, value: (row) => row.collector },
   ];
   return (
-    <section className="customer-detail-page page-enter"><button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to customers</button><header className="customer-profile-header"><div className="profile-identity"><span className="large-avatar">{customer.customerName.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><div><span className="eyebrow">{customer.customerNumber}</span><h1>{customer.customerName}</h1><p>{customer.segment} · {customer.region} · Managed by {customer.collector}</p></div></div><div className="profile-actions"><StatusPill value={`${customer.risk} risk`} /><button className="secondary-button">More actions <ChevronDown size={15} /></button></div></header><div className="customer-metrics"><div><span>Total open</span><strong>{money.format(openAmount)}</strong><small>{customerInvoices.filter((invoice) => invoice.status === "Open").length} open invoices</small></div><div><span>Credit limit</span><strong>{money.format(customer.creditLimit)}</strong><small>{Math.round((openAmount / customer.creditLimit) * 100)}% utilized</small></div><div className="calculated-metric"><span>{expression.name}<b>fx</b></span><strong>{formatResult(evaluateExpression(expression, customer, invoices), expression.resultType)}</strong><small>Calculated in Expression Studio</small></div><div><span>Oldest due</span><strong>{Math.max(...customerInvoices.map((invoice) => Math.max(0, Math.round((new Date("2026-07-20").getTime() - new Date(invoice.dueDate).getTime()) / 86400000))), 0)} days</strong><small>As of Jul 20, 2026</small></div></div><div className="detail-content"><section className="detail-invoices"><header><div><span className="eyebrow">Open items</span><h2>Invoices</h2></div><button className="text-button"><Filter size={16} /> Filter</button></header><DataGrid rows={customerInvoices} columns={columns} rowKey={(row) => row.invoiceNumber} emptyLabel="No invoices for this customer." /></section><aside className="customer-profile-panel"><header><span className="eyebrow">Customer attributes</span><h2>Profile</h2></header><dl><div><dt>Customer number</dt><dd>{customer.customerNumber}</dd></div><div><dt>Collector</dt><dd>{customer.collector}</dd></div><div><dt>Region</dt><dd>{customer.region}</dd></div><div><dt>Segment</dt><dd>{customer.segment}</dd></div><div><dt>Currency</dt><dd>{customer.currency}</dd></div><div><dt>Text reference 1</dt><dd>{customer.references.textRef1 || "—"}</dd></div><div><dt>Number reference 1</dt><dd>{customer.references.numberRef1 || "—"}</dd></div><div><dt>Date reference 1</dt><dd>{customer.references.dateRef1 || "—"}</dd></div></dl></aside></div></section>
+    <section className="customer-detail-page page-enter"><button className="back-link" onClick={onBack}><ArrowLeft size={16} /> Back to customers</button><header className="customer-profile-header"><div className="profile-identity"><span className="large-avatar">{customer.customerName.split(" ").map((part) => part[0]).slice(0, 2).join("")}</span><div><span className="eyebrow">{customer.customerNumber}</span><h1>{customer.customerName}</h1><p>{customer.segment} · {customer.region} · Managed by {customer.collector}</p></div></div><div className="profile-actions"><StatusPill value={`${customer.risk} risk`} /><button className="secondary-button">More actions <ChevronDown size={15} /></button></div></header><div className="customer-metrics"><div><span>Total open</span><strong>{money.format(openAmount)}</strong><small>{customerInvoices.filter((invoice) => invoice.status === "Open").length} open invoices</small></div><div><span>Credit limit</span><strong>{money.format(customer.creditLimit)}</strong><small>{Math.round((openAmount / customer.creditLimit) * 100)}% utilized</small></div><div className="calculated-metric"><span>{expression.name}<b>fx</b></span><strong>{expression.level === "customer" ? formatResult(evaluateExpression(expression, customer, invoices), expression.resultType) : `${customerInvoices.length} invoice values`}</strong><small>{expression.level === "customer" ? "Calculated in Expression Studio" : "Shown in the invoice grid below"}</small></div><div><span>Oldest due</span><strong>{Math.max(...customerInvoices.map((invoice) => Math.max(0, Math.round((new Date("2026-07-20").getTime() - new Date(invoice.dueDate).getTime()) / 86400000))), 0)} days</strong><small>As of Jul 20, 2026</small></div></div><div className="detail-content"><section className="detail-invoices"><header><div><span className="eyebrow">Open items</span><h2>Invoices</h2></div><button className="text-button"><Filter size={16} /> Filter</button></header><DataGrid rows={customerInvoices} columns={columns} rowKey={(row) => row.invoiceNumber} emptyLabel="No invoices for this customer." /></section><aside className="customer-profile-panel"><header><span className="eyebrow">Customer attributes</span><h2>Profile</h2></header><dl><div><dt>Customer number</dt><dd>{customer.customerNumber}</dd></div><div><dt>Collector</dt><dd>{customer.collector}</dd></div><div><dt>Region</dt><dd>{customer.region}</dd></div><div><dt>Segment</dt><dd>{customer.segment}</dd></div><div><dt>Currency</dt><dd>{customer.currency}</dd></div><div><dt>Text reference 1</dt><dd>{customer.references.textRef1 || "—"}</dd></div><div><dt>Number reference 1</dt><dd>{customer.references.numberRef1 || "—"}</dd></div><div><dt>Date reference 1</dt><dd>{customer.references.dateRef1 || "—"}</dd></div></dl></aside></div></section>
   );
 }
 
@@ -916,7 +1042,12 @@ export default function Home() {
   }
 
   function openEditor(field: Expression) {
-    const next = { ...field, conditions: field.conditions.map((condition) => ({ ...condition })) };
+    const next = {
+      ...field,
+      sourceFields: getExpressionSourceFields(field),
+      conditions: field.conditions.map((condition) => ({ ...condition })),
+      conditionGroups: getConditionGroups(field).map((group) => ({ ...group, conditions: group.conditions.map((condition) => ({ ...condition })) })),
+    };
     setExpressionState({ ...next, resultType: inferResultType(next) });
     setTabs((current) => {
       const editorTab = { id: "builder", label: field.name || "New calculated field", kind: "view" as const, view: "builder" as const };
@@ -936,7 +1067,9 @@ export default function Home() {
       resultType: "amount",
       functionKey: "SUMIFS",
       sourceField: "invoice.openAmount",
+      sourceFields: ["invoice.openAmount"],
       conditions: [{ id: `condition-${Date.now()}`, field: "invoice.status", operator: "equals", value: "Open" }],
+      conditionGroups: [{ id: `group-${Date.now()}`, conditions: [{ id: `condition-${Date.now()}`, field: "invoice.status", operator: "equals", value: "Open" }] }],
     });
   }
 
@@ -956,7 +1089,13 @@ export default function Home() {
   }
 
   function runExpression(field: Expression) {
-    setExpressionState({ ...field, resultType: inferResultType(field), conditions: field.conditions.map((condition) => ({ ...condition })) });
+    setExpressionState({
+      ...field,
+      resultType: inferResultType(field),
+      sourceFields: getExpressionSourceFields(field),
+      conditions: field.conditions.map((condition) => ({ ...condition })),
+      conditionGroups: getConditionGroups(field).map((group) => ({ ...group, conditions: group.conditions.map((condition) => ({ ...condition })) })),
+    });
     navigate("simulation");
   }
 
@@ -981,7 +1120,7 @@ export default function Home() {
     }
     if (activeView === "expressions") return <CalculatedFieldsLibrary fields={savedExpressions} onNew={createExpression} onEdit={openEditor} onRun={runExpression} onShowGuide={() => setShowGuide(true)} />;
     if (activeView === "customers") return <CustomerGrid customers={customers} invoices={invoices} expression={expression} onOpenCustomer={openCustomer} onUpload={() => setUploadType("customer")} />;
-    if (activeView === "invoices") return <InvoiceGrid invoices={invoices} onOpenCustomer={(customerNumber) => { const customer = customers.find((item) => item.customerNumber === customerNumber); if (customer) openCustomer(customer); }} onUpload={() => setUploadType("invoice")} />;
+    if (activeView === "invoices") return <InvoiceGrid invoices={invoices} customers={customers} expression={expression} onOpenCustomer={(customerNumber) => { const customer = customers.find((item) => item.customerNumber === customerNumber); if (customer) openCustomer(customer); }} onUpload={() => setUploadType("invoice")} />;
     if (activeView === "simulation") return <SimulationLab expression={expression} customers={customers} invoices={invoices} onOpenCustomer={openCustomer} onPublish={() => saveExpression("Published")} />;
     return <ExpressionBuilder expression={expression} setExpression={setExpression} customers={customers} invoices={invoices} onShowGuide={() => setShowGuide(true)} onShowFunctions={() => setShowFunctions(true)} onOpenSimulation={() => navigate("simulation")} onBackToLibrary={() => navigate("expressions")} onSaveDraft={() => saveExpression("Draft")} onPublish={() => saveExpression("Published")} onToast={showToast} />;
   }
@@ -1007,10 +1146,9 @@ export default function Home() {
       </section>
 
       {showGuide && <HowToDrawer onClose={() => setShowGuide(false)} />}
-      {showFunctions && <FunctionLibrary selected={expression.functionKey} onSelect={(functionKey) => setExpression((current) => {
-        const candidates = sourceFieldsForFunction(functionKey);
-        const sourceField = candidates.some((field) => field.key === current.sourceField) ? current.sourceField : candidates[0]?.key ?? current.sourceField;
-        return { ...current, functionKey, sourceField };
+      {showFunctions && <FunctionLibrary selected={expression.functionKey} level={expression.level} onSelect={(functionKey) => setExpression((current) => {
+        const sources = sourceSelection(functionKey, current.level, getExpressionSourceFields(current));
+        return { ...current, functionKey, sourceField: sources[0] ?? "", sourceFields: sources };
       })} onClose={() => setShowFunctions(false)} />}
       {uploadType && <UploadModal initialType={uploadType} customers={customers} onUploadCustomers={(rows) => { setCustomers((current) => [...current, ...rows]); showToast(`${rows.length} customers uploaded successfully.`); }} onUploadInvoices={(rows) => { setInvoices((current) => [...current, ...rows]); showToast(`${rows.length} invoices uploaded successfully.`); }} onClose={() => setUploadType(null)} />}
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
