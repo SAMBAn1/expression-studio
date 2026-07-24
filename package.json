@@ -1,7 +1,8 @@
 {
-  "name": "collections-expression-builder-poc",
+  "name": "collections-expression-studio",
   "version": "0.1.0",
   "private": true,
+  "description": "A visual Excel-to-SQL expression builder for customer and invoice calculations.",
   "engines": {
     "node": ">=22.13.0"
   },

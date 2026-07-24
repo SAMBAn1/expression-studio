@@ -1,98 +1,108 @@
-# vinext-starter
+# Collections Expression Studio
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+A working product concept for creating Excel-like calculated fields directly
+inside a collections application. Administrators can compose business logic
+visually, test it against customer and invoice data, inspect the generated SQL,
+and publish the result without writing code.
 
-## Prerequisites
+[Open the live prototype](https://collections-expression-builder-poc.galactic-sipu.chatgpt.site/)
+&nbsp;&middot;&nbsp;
+[Read the product story](https://collections-expression-builder-poc.galactic-sipu.chatgpt.site/story)
 
-- Node.js `>=22.13.0`
+![Collections Expression Studio product preview](public/og.png)
 
-## Quick Start
+## The Product Idea
+
+Many collections requirements are mathematically simple but operationally
+expensive. A request such as "sum open amounts for selected document types at
+customer level" can require exporting data to another analytical platform or
+changing a Java agent.
+
+Expression Studio keeps SQL-translatable calculations in the product:
+
+1. Choose the output grain: customer or invoice.
+2. Select a familiar spreadsheet function.
+3. Combine approved fields and conditions visually.
+4. Simulate the result on representative data.
+5. Review the generated formula, SQL, and parameters.
+6. Save or publish the calculated field.
+
+## What The Prototype Demonstrates
+
+- Grain-aware calculation building for customer and invoice fields
+- Conditional aggregation with `SUMIFS`, `COUNTIFS`, and `AVERAGEIFS`
+- Same-level math with `SUM`, `AVERAGE`, `DIFFERENCE`, `PRODUCT`, `MIN`, and
+  `MAX`
+- Type-aware text, number, amount, and date operators
+- Grouped boolean logic using `(A AND B) OR (C AND D)`
+- Automatic output-type inference
+- Excel-equivalent formula and parameterized PostgreSQL previews
+- Customer and invoice data grids with calculated-field results
+- Focused simulation before publishing
+- CSV upload journeys with 10 numeric, 10 text, and 10 date reference fields at
+  each data level
+- A companion product-story page covering the problem, principles,
+  architecture, and roadmap
+
+## Representative Expression
+
+```text
+For each Customer
+use SUMIFS
+to sum Invoice.OpenAmount
+where Invoice.DocumentType is any of RV, DZ
+and Invoice.Status is Open
+```
+
+The expression compiles into a governed aggregate query at customer grain. The
+UI only exposes invoice measures because invoices are the child records being
+aggregated.
+
+## Technology
+
+- React 19 and TypeScript
+- Next.js-compatible App Router
+- Vinext and Vite
+- Cloudflare Workers-compatible output
+- Lucide icons
+- Node test runner and ESLint
+
+The expression model, evaluator, formula translation, SQL compiler, sample
+customers, sample invoices, and reference-field schema live in
+`app/expression-data.ts`.
+
+## Run Locally
+
+Node.js `22.13.0` or newer is required.
 
 ```bash
 npm install
 npm run dev
+```
+
+Then open the local URL printed by the development server.
+
+```bash
+npm run lint
+npm test
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Project Structure
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
+```text
+app/
+  expression-data.ts   Typed expression model, evaluator, and SQL compiler
+  page.tsx              Expression Studio and data-management prototype
+  story/                Product story and motion
+public/                 Product imagery and social preview
+tests/                  Rendered-application smoke tests
+worker/                 Cloudflare-compatible worker entry point
 ```
 
-## Optional Dispatch-Owned ChatGPT Sign-In
+## Status
 
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+This repository is a product-management proof of concept, not a production
+expression engine. A production implementation would add server-side
+persistence, permissions, expression versioning, dialect-aware SQL validation,
+query-cost controls, audit history, and a sandboxed execution service.
