@@ -40,6 +40,7 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
+import ExpressionBuilderV2 from "./expression-builder-v2";
 import {
   type Condition,
   type ConditionGroup,
@@ -364,10 +365,10 @@ function FunctionLibrary({
 function HowToDrawer({ onClose }: { onClose: () => void }) {
   const [step, setStep] = useState(0);
   const steps = [
-    { title: "Name the outcome", body: "Start with the business value you want to create, then choose whether it belongs on every customer or every invoice.", example: "Selected document type open amount" },
-    { title: "Build it like Excel", body: "Pick a familiar function. The visual sentence lets you choose fields and criteria without remembering formula syntax.", example: "SUMIFS(Open amount, Document type, {RV,DZ}, Status, Open)" },
-    { title: "Test a small sample", body: "Choose representative customers and compare matched invoices with the calculated result before publishing.", example: "Costco Wholesale: 2 matched invoices = $203,000" },
-    { title: "Review and publish", body: "Inspect the generated SQL and parameters, then save the calculated field for use in customer or invoice grids.", example: "The SQL is generated from approved fields and functions only." },
+    { title: "Choose where it appears", body: "Start with the record that needs the result. Customer values can summarize invoices; invoice values calculate one row at a time.", example: "One open invoice amount total on every customer" },
+    { title: "Choose the business outcome", body: "Pick a total, count, average, or same-record calculation. Expression Studio selects the underlying function for you.", example: "Total invoice value" },
+    { title: "Narrow the records", body: "Include every invoice or add plain-language rules. Rules in one set use AND; an alternative set creates OR logic.", example: "Status is Open AND Document type is any of RV, DZ" },
+    { title: "Name, test, and publish", body: "Review a few representative results, then approve the field for customer or invoice grids.", example: "Test on Costco Wholesale and three other customers" },
   ];
   return (
     <div className="drawer-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -390,9 +391,9 @@ function HowToDrawer({ onClose }: { onClose: () => void }) {
           </div>
           {step === 1 && (
             <div className="mini-anatomy">
-              <span className="anatomy-function">SUMIFS</span>
+              <span className="anatomy-function">Total</span>
               <span className="anatomy-field">Open amount</span>
-              <span className="anatomy-condition">where Document type is RV or DZ</span>
+              <span className="anatomy-condition">from matching invoices</span>
             </div>
           )}
         </div>
@@ -621,7 +622,7 @@ function CalculatedFieldsLibrary({
   );
 }
 
-function ExpressionBuilder({
+export function LegacyExpressionBuilder({
   expression,
   setExpression,
   customers,
@@ -1122,7 +1123,7 @@ export default function Home() {
     if (activeView === "customers") return <CustomerGrid customers={customers} invoices={invoices} expression={expression} onOpenCustomer={openCustomer} onUpload={() => setUploadType("customer")} />;
     if (activeView === "invoices") return <InvoiceGrid invoices={invoices} customers={customers} expression={expression} onOpenCustomer={(customerNumber) => { const customer = customers.find((item) => item.customerNumber === customerNumber); if (customer) openCustomer(customer); }} onUpload={() => setUploadType("invoice")} />;
     if (activeView === "simulation") return <SimulationLab expression={expression} customers={customers} invoices={invoices} onOpenCustomer={openCustomer} onPublish={() => saveExpression("Published")} />;
-    return <ExpressionBuilder expression={expression} setExpression={setExpression} customers={customers} invoices={invoices} onShowGuide={() => setShowGuide(true)} onShowFunctions={() => setShowFunctions(true)} onOpenSimulation={() => navigate("simulation")} onBackToLibrary={() => navigate("expressions")} onSaveDraft={() => saveExpression("Draft")} onPublish={() => saveExpression("Published")} onToast={showToast} />;
+    return <ExpressionBuilderV2 expression={expression} setExpression={setExpression} customers={customers} invoices={invoices} onShowGuide={() => setShowGuide(true)} onShowFunctions={() => setShowFunctions(true)} onOpenSimulation={() => navigate("simulation")} onBackToLibrary={() => navigate("expressions")} onSaveDraft={() => saveExpression("Draft")} onToast={showToast} />;
   }
 
   return (
